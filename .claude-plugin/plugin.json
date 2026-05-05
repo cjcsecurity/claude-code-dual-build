@@ -1,0 +1,23 @@
+{
+  "name": "claude-code-dual-build",
+  "version": "0.1.0",
+  "description": "Symmetric multi-agent build with mandatory cross-review for Claude Code + Codex. Splits coding tasks ~50/50 between Claude and Codex, runs in parallel in isolated git worktrees, and has the opposite model review each diff.",
+  "author": {
+    "name": "cjcsecurity",
+    "url": "https://github.com/cjcsecurity"
+  },
+  "homepage": "https://github.com/cjcsecurity/claude-code-dual-build",
+  "repository": "https://github.com/cjcsecurity/claude-code-dual-build",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "multi-agent",
+    "cross-review",
+    "peer-review",
+    "parallel-build",
+    "worktree",
+    "skill",
+    "agent"
+  ]
+}
