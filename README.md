@@ -101,6 +101,10 @@ For these cases, plain Claude Code or the official Codex plugin's opportunistic 
 
 A typical 4-subtask run is ~8 model calls (4 builds + 4 reviews) plus orchestrator overhead. Expect several minutes of wall time and meaningful token spend. The cross-validation is what justifies it; for trivial work, skip this skill.
 
+## Worked examples
+
+[`EXAMPLES.md`](EXAMPLES.md) is a gallery of real cross-review catches from runs against actual codebases — the load-bearing artifacts that demonstrate what the workflow uniquely produces vs. self-reported numbers. The first entry shows two real edge-case bugs that Claude reviewing Codex's work caught on a `mission-control` task.
+
 ## Files
 
 ```
@@ -113,9 +117,15 @@ agents/
 skills/dual-build/
   SKILL.md               # The orchestrator manual — Stages 0–4 of the workflow
 install.sh               # Manual install helper for non-plugin users
+EXAMPLES.md              # Gallery of real cross-review catches
+CHANGELOG.md             # Version history
 SECURITY.md              # Vulnerability reporting policy
 LICENSE                  # MIT
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). Latest: **v0.2.0** (2026-05-06) — improvements based on four real test-run retrospectives; adds Stage 1.5 worktree base verification, tightens bail criteria, documents recurring Codex-builder commit-recovery and worktree-unlock gotchas, hardens reviewer prompts against false-positive negative claims.
 
 ## Security
 

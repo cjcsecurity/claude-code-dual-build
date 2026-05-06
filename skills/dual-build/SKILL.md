@@ -26,23 +26,29 @@ Use when the prompt has 2+ independently-scopable components AND quality matters
 
 ## When NOT to use (bail criteria)
 
-If any of these hold, decline the dual-build approach and offer a normal single-agent build instead:
+Bail (decline the workflow, recommend single-agent) if ANY of these hold. Bailing is a valid output of this skill — state the reason explicitly to the user, don't force-fit:
 
-- Single-file or <50 LOC changes
-- Tightly coupled work where every subtask depends on every other
-- Exploratory/interactive work where the user is steering turn-by-turn
-- Time-sensitive fixes (this workflow takes minutes, not seconds)
-- The decomposition produces overlapping file scopes that can't be made disjoint
-
-State the bail reason explicitly to the user. Don't force-fit the workflow to make it look applicable.
+- **Single-file or <50 LOC total delta** across all subtasks. Hard threshold; not "consider." Cross-review on small changes is theatre.
+- **Imbalanced split** — any subtask is <20% of the total LOC delta. A 90/10 split passes "file-disjoint" but defeats the cross-review purpose: the reviewer of the trivial subtask has nothing to find, and the substantive subtask gets the same scrutiny as a single-agent run.
+- **Code-vs-docs ratio is heavy on docs.** If half or more of the work is README / .env.example / CHANGELOG / setup prose, cross-review on docs is low-signal. Recommend single-agent for docs-heavy work.
+- **No file-disjoint decomposition possible** — everything touches the same hot file. Worktree isolation can't help.
+- **Tightly-coupled work** where every subtask needs every other subtask's output to test (cross-task dependencies > 1).
+- **Time-sensitive fixes** — the workflow takes minutes, not seconds.
+- **Exploratory or interactive work** — user is steering turn-by-turn.
+- **Working tree is dirty** — uncommitted changes won't be visible to the worktrees (see prerequisites). Either commit/stash first or bail.
 
 ## Required prerequisites
 
-- Working directory must be a git repo (`git rev-parse --is-inside-work-tree`)
-- Codex plugin healthy — `mcp__codex__codex` available and authenticated. If you're unsure, run `/codex:setup` to verify before starting.
-- Worktrees feature available — standard git, but check `git worktree list` doesn't error.
+Run all of these checks before decomposing. If any fail, report and stop.
 
-If any prerequisite is missing, report it and stop before decomposing.
+- **Git repo**: `git rev-parse --is-inside-work-tree`.
+- **Codex MCP healthy**: `mcp__codex__codex` available and authenticated. Run `/codex:setup` if unsure.
+- **Worktrees feature available**: `git worktree list` doesn't error.
+- **Clean working tree**: `git diff --quiet && git diff --cached --quiet`. Worktrees branch from HEAD, so any uncommitted changes are invisible to the builders. If dirty:
+  - Surface the situation to the user.
+  - Ask them to either commit the WIP as a checkpoint commit (`git commit -am "wip: pre-dual-build checkpoint"`) or explicitly acknowledge the WIP won't be in the worktrees.
+  - Do **not** silently `git stash` and pop — that introduces a parallel failure mode if subtasks touch the same files.
+- **Capture parent HEAD SHA**: before any worktree dispatch, run `git rev-parse HEAD` and save the output. This is the expected base for every worktree (verified in Stage 1.5).
 
 ## Pipeline
 
@@ -51,7 +57,8 @@ If any prerequisite is missing, report it and stop before decomposing.
 Read enough code (Glob, Grep, targeted Reads) to understand the module boundaries the task touches. Then produce a task split with these properties:
 
 - **2–6 subtasks total.** Fewer is fine; more than 6 means the task is probably too granular and overhead will dominate.
-- **File-disjoint.** No two subtasks may touch the same file. If two pieces of work touch the same file, merge them into one subtask. If you cannot achieve disjoint scopes, bail out — the workflow doesn't work without isolation.
+- **File-disjoint.** No two subtasks may touch the same file. If two pieces of work touch the same file, merge them into one subtask. If you cannot achieve disjoint scopes, bail out.
+- **Balanced.** No subtask should be <20% of the total estimated LOC delta. If your decomposition is lopsided (e.g., 3 bugs in one file + 1 line in another), the right answer is single-agent — bail.
 - **~50/50 assignment** between Claude and Codex. Don't agonize over the split; roughly even is fine. Slight preferences:
   - Codex tends to be strong at scaffolding, boilerplate, and well-specified mechanical changes
   - Claude tends to be strong at nuanced refactors and reasoning-heavy changes
@@ -70,7 +77,7 @@ Each subtask must specify:
 
 ### Stage 1 — Parallel build
 
-Once the user confirms the split, dispatch all builders in a SINGLE message with N parallel `Agent` tool calls:
+Once the user confirms the split, dispatch all builders in a SINGLE message with N parallel `Agent` tool calls.
 
 For each subtask assigned to Claude:
 ```
@@ -78,57 +85,71 @@ Agent(
   subagent_type: "claude-builder",
   isolation: "worktree",
   description: "Build T<id>: <one-line goal>",
-  prompt: "<full structured brief — Task ID, Goal, Brief, File scope, Acceptance, Project notes>"
+  prompt: "<full structured brief — Task ID, Goal, Brief, File scope, Acceptance, Project notes, plus 'Parent HEAD: <PARENT_HEAD_SHA>. Verify with `git log --oneline -3` and report the output in your final report.'>"
 )
 ```
 
-For each subtask assigned to Codex:
-```
-Agent(
-  subagent_type: "codex-builder",
-  isolation: "worktree",
-  description: "Build T<id> via Codex: <one-line goal>",
-  prompt: "<same structured brief>"
-)
-```
+For each subtask assigned to Codex: same shape, `subagent_type: "codex-builder"`.
 
-Wait for all to return. Each response includes the worktree path, branch name, files changed, and a structured report. Save these into a per-task record:
+**Embed the parent's HEAD SHA in every brief.** This lets builders self-check their base and gives the orchestrator data to detect mismatches in Stage 1.5.
 
-```
-T1: { assigned: claude, worktree: /path/to/wt-T1, branch: agent/T1-foo, status: Done, ... }
-T2: { assigned: codex,  worktree: /path/to/wt-T2, branch: agent/T2-bar, status: Done, ... }
-…
-```
+Wait for all to return. Each response includes the worktree path, branch name, files changed, and a structured report.
 
-Handle failures per-task:
-- If a builder returns Blocked or errored, do NOT cancel the others. Report the failure to the user after all builders finish, and ask whether to abort, retry that subtask, or proceed with the remaining tasks.
-- If a Codex builder reports `❌ Codex handoff failed`, the worktree may still exist but be empty. Note this and ask the user.
+### Stage 1.5 — Verify worktree bases
+
+**This is the single most important post-dispatch check.** Before proceeding to Stage 2, verify each worktree was rooted at the parent's HEAD. Worktrees occasionally default to `main` / HEAD-of-default rather than the working branch's tip, which silently invalidates the entire run (builders target outdated symbols, diffs don't merge cleanly, reviewers chase phantom conflicts).
+
+For each builder report:
+
+1. Each builder's report includes a `git log --oneline -3` output. Read it.
+2. The third commit in that listing (the worktree's base before the builder's commits) should equal the parent HEAD SHA captured in prerequisites.
+3. Cross-check: `git -C <worktree_path> merge-base HEAD <parent_head_sha>` must equal `<parent_head_sha>` exactly. (Parent HEAD must be an ancestor of the worktree's HEAD.)
+
+If a base mismatch is detected for subtask T<id>:
+
+- **Do not** proceed to cross-review for that subtask. The reviewer will chase phantom issues.
+- Surface to user: "Worktree T<id> was rooted at <stale-sha> instead of expected <parent-head>. Builder may have targeted symbols that don't exist on the working branch. Recommend: re-rebase the worktree onto current HEAD and re-run that builder, OR abandon this subtask."
+- Wait for user decision before continuing.
+
+This single check would have prevented the entire FinancialResearch run failure (2026-05-05) where every worktree was rooted at a stale base.
+
+### Stage 1.6 — Codex builder partial-success recovery
+
+The codex-builder agent regularly reports `Done with caveats — edits applied but commit failed` (recurring in SecureCatch + mission-control runs). This happens when Codex's sandbox/git-add fails inside the worktree's git-metadata path. **The file edits are correct; only the commit step failed.** Treat this as routine recovery, not a workflow failure.
+
+Recovery for each affected subtask:
+
+1. Verify with `git -C <worktree_path> status --porcelain` — there should be unstaged/uncommitted changes matching the builder's reported file list.
+2. Spot-check one changed file with the Read tool to confirm the diff matches the builder's reported summary.
+3. Commit on the builder's behalf:
+   ```
+   git -C <worktree_path> add -A
+   git -C <worktree_path> commit -m "<derive-from-builder-summary>"
+   ```
+4. Continue to cross-review.
+
+### Stage 1.7 — Per-task failure handling
+
+- **Builder returns Blocked or errored**: do NOT cancel the others. Report after all builders finish; ask whether to abort, retry that subtask, or proceed without it.
+- **Codex 5xx or AnyIO timeout <60s**: retry the builder ONCE before escalating. These are usually transient API issues.
+- **`❌ Codex handoff failed`**: the worktree may exist but be empty. Do NOT auto-retry on auth-related errors (401/403/expired token). Report and stop.
 
 ### Stage 2 — Parallel cross-review
 
-Dispatch all reviewers in a SINGLE message with N parallel `Agent` calls. **Critical: each task is reviewed by the OPPOSITE model.** Claude-built tasks go to `codex-reviewer`; Codex-built tasks go to `claude-reviewer`.
-
-For each Claude-built task (T):
-```
-Agent(
-  subagent_type: "codex-reviewer",
-  description: "Cross-review T<id> (Claude-built) via Codex",
-  prompt: "<Task ID, Worktree path, Original brief, File scope, Builder's report, Review focus if any>"
-)
-```
-
-For each Codex-built task (T):
-```
-Agent(
-  subagent_type: "claude-reviewer",
-  description: "Cross-review T<id> (Codex-built) via Claude",
-  prompt: "<same shape>"
-)
-```
+Dispatch all reviewers in a SINGLE message with N parallel `Agent` calls. **Critical: each task is reviewed by the OPPOSITE model.** Claude-built tasks → `codex-reviewer`; Codex-built tasks → `claude-reviewer`.
 
 Reviewers do NOT use `isolation: "worktree"` — they read the existing builder worktree directly via `git -C <path>` and the Read tool with absolute paths.
 
+Single auto-retry on transient errors (HTTP 5xx, AnyIO timeout <60s with no useful output) before escalating.
+
 Wait for all reviews. Each returns severity-tagged findings (Critical / Important / Praise) and a recommendation (Ready / Fix-before-merge / Rework).
+
+#### Cross-review depth + verification
+
+Reviewer findings can be **confidently wrong** — a past run had a Codex reviewer declare `JIRA_CSIRT_EMAIL` "referenced nowhere in the codebase" when it was actively used in `lib/jira.ts:46-48`. Don't apply findings blindly:
+
+- **Spot-check Critical and Important findings** against ground truth before applying. Especially negative claims ("X is unused", "Y has no callers", "Z is dead code") — a 30-second `grep -r '<symbol>' .` saves applying a hallucinated finding.
+- **Note review depth asymmetry**: Codex reviews on past runs have been substantially lighter than Claude reviews (4 praise bullets vs. paragraph-per-finding with file:line citations). If Codex's review of a Claude-built diff produces only "looks good" findings, prompt yourself: did the reviewer actually engage with edge cases? Sometimes the answer is "the diff really is clean"; sometimes the answer is "rerun with explicit edge-case prompting."
 
 ### Stage 3 — Consolidate & report
 
@@ -137,7 +158,8 @@ Produce a unified report grouped per task. For each task:
 ```
 ## T<id> — <goal>
 **Assigned**: claude | codex
-**Builder status**: Done | Done with caveats | Blocked
+**Builder status**: Done | Done with caveats (commit recovered) | Blocked
+**Worktree base**: ✅ matches parent HEAD | ❌ stale (T<id> excluded from review)
 **Reviewer recommendation**: ✅ Ready / ⚠️ Fix Important / ❌ Rework
 
 **Build summary** (from builder report): …
@@ -145,11 +167,12 @@ Produce a unified report grouped per task. For each task:
   - Critical findings: …
   - Important findings: …
   - Praise: …
+**Verification spot-checks** (any reviewer claims you grep-verified): …
 ```
 
 Then a top-level summary:
 
-- Total tasks, ready vs. needs-rework count
+- Total tasks, ready vs. needs-rework count, any excluded due to base mismatch
 - Cross-task issues you noticed (overlapping logic, contradicting assumptions, etc.) — these are things only the orchestrator can see
 - Recommended merge order if some tasks depend on others
 
@@ -161,16 +184,47 @@ Then a top-level summary:
 - **Rework**: leave the worktree and branch in place; the user may iterate.
 - **Abandon**: `git worktree remove <path>` then `git branch -D <branch>`. Confirm with the user before deleting work.
 
-After merges complete, ask whether to clean up remaining worktrees.
+#### Worktree cleanup gotcha
+
+`git worktree remove` may fail with "cannot remove a locked working tree, lock reason: claude agent agent-… (pid …)". The Agent system locks worktrees while an agent task is "live" and doesn't auto-unlock when the task returns. **Don't reach for `-f -f`** — just unlock first:
+
+```
+git worktree unlock <path>
+git worktree remove <path>
+```
+
+#### Post-merge verification
+
+After merges complete, run the project's test suite (`npm test`, `pytest`, etc.) yourself in the main checkout. Reviewers are read-only and may not have been able to execute the full suite — the orchestrator is the final test-running step. If tests fail post-merge, you have a real signal that the cross-review missed something or the merges interacted unexpectedly.
+
+Then ask whether to clean up remaining worktrees (run the unlock+remove sequence per worktree).
 
 ## Guardrails
 
-- **File-disjoint enforcement is hard.** If Stage 0 cannot produce disjoint scopes, BAIL. Recommend a single-agent build instead. Don't try to be clever with overlapping scopes — it defeats the parallel-isolation property.
+- **Bail criteria are strict.** Re-read "When NOT to use" if Stage 0 produces an imbalanced or docs-heavy split — single-agent is the right tool more often than the workflow's framing suggests.
+- **Worktree base verification is mandatory.** Stage 1.5 catches a real failure mode that has invalidated entire runs. Never skip it.
 - **No auto-merge** without user confirmation per task.
 - **No auto-cleanup** of worktrees or branches without confirmation. The user might want to inspect them.
-- **Bail-out is fine, even mid-flight.** If, after reading code in Stage 0, you realize the task is smaller than expected, say so and switch to single-agent mode. Don't run the full pipeline on a 30-line change just because the user invoked /dual-build.
 - **The cross-review is mandatory.** If a reviewer fails, retry it once; if it still fails, report the gap to the user — do not skip the review and recommend merge.
+- **Reviewer findings need spot-checks.** Confidently-wrong findings have shipped. Verify Critical/Important claims with `grep` or `Read` before applying.
+- **Orchestrator runs the post-merge tests.** Reviewers can't always execute the suite; you're the final check.
 
 ## Cost note
 
-A typical run is: N builder invocations (Opus + Codex) + N review invocations (Codex + Opus) + orchestrator overhead. For N=4 that's ~8 model calls plus the orchestrator's planning. Budget several minutes wall time and meaningful token spend. Worth it when the cross-validation catches real bugs; not worth it for a one-file change. Choose accordingly.
+A typical run is: N builder invocations (Opus + Codex) + N review invocations (Codex + Opus) + orchestrator overhead. For N=4 that's ~8 model calls plus the orchestrator's planning. Budget several minutes wall time and meaningful token spend.
+
+The cross-review is what justifies the cost. On runs with substantive findings (e.g., race-condition catches, edge-case discoveries), it earns its keep. On runs with no findings — or with all findings being false positives — it's overhead. Bail criteria exist to avoid those runs.
+
+## Changelog
+
+**v0.2.0** (2026-05-06) — based on four real test-run retrospectives across user projects (OSINT-Extension, FinancialResearch, SecureCatch, mission-control):
+- Add Stage 1.5: post-dispatch worktree base verification (FinancialResearch run had every builder rooted at a stale commit, invalidating the whole pipeline).
+- Add Stage 1.6: documented Codex-builder partial-success recovery (recurring "files-on-disk-but-uncommitted" mode in SecureCatch + mission-control runs).
+- Add `git worktree unlock` cleanup step (mission-control run hit this).
+- Add clean-tree precondition (worktrees-branch-from-HEAD invariant).
+- Tighten bail criteria: balance check (<20% subtask), code-vs-docs threshold, hard <50 LOC threshold (OSINT-Extension run correctly bailed; criteria now codify why).
+- Add single auto-retry on transient builder/reviewer errors.
+- Embed parent HEAD SHA in builder briefs so builders can self-check base.
+- Add cross-review depth + spot-check guidance (SecureCatch run had a Codex reviewer hallucinate a negative claim about `JIRA_CSIRT_EMAIL`).
+
+**v0.1.0** (2026-05-05) — initial release.

@@ -19,11 +19,12 @@ The orchestrator's prompt will contain:
 
 ## What to do
 
-1. Run `pwd` and `git branch --show-current` to confirm your worktree and branch.
-2. Read the file scope to understand the existing code before changing it.
-3. Implement the subtask within the file scope. Stay strictly within scope — if you discover you need to touch a file outside scope, stop and report rather than expanding silently.
-4. Run the acceptance check (tests, build, manual verification per the brief). If it fails, fix and re-run. If you can't make it pass within reasonable effort, report blocked.
-5. Commit your work with a descriptive message. The worktree gives you a clean branch; commit there. Do NOT push.
+1. Run `pwd`, `git branch --show-current`, and `git log --oneline -3`. Save the `git log` output — you'll include it in the final report so the orchestrator can verify your worktree was rooted at the expected parent HEAD (Stage 1.5 base check).
+2. The orchestrator's brief should include a "Parent HEAD" SHA. Confirm the third line of your `git log --oneline -3` matches it (or that it's reachable as an ancestor). If it doesn't match, note it in your report — your work may need to be re-run on a correctly-based worktree.
+3. Read the file scope to understand the existing code before changing it.
+4. Implement the subtask within the file scope. Stay strictly within scope — if you discover you need to touch a file outside scope, stop and report rather than expanding silently.
+5. Run the acceptance check (tests, build, manual verification per the brief). If it fails, fix and re-run. If you can't make it pass within reasonable effort, report blocked.
+6. Commit your work with a descriptive message. The worktree gives you a clean branch; commit there. Do NOT push.
 
 ## What NOT to do
 
@@ -55,4 +56,8 @@ Return exactly this structure:
 **Risks / open questions**: anything the cross-reviewer should pay particular attention to. If none, write "none."
 
 **Out-of-scope flags** (if any): files you wanted to touch but didn't, with one-line reason for each.
+
+**Worktree base** (`git log --oneline -3` from BEFORE your edits): the captured output, so the orchestrator can verify Stage 1.5.
+
+**Final state** (`git status --porcelain`): the output. Should be empty after a successful commit.
 ```

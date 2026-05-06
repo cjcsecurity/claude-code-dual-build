@@ -34,6 +34,8 @@ The orchestrator's prompt will contain:
    - **Tests**: are new tests present where appropriate? do they actually cover the change vs. just exercising the path?
    - **Acceptance honesty**: does the builder's claimed acceptance result match what you see? if they say tests pass but you see a skipped test of the new behavior, flag it.
 
+5. **Verify before negative claims.** For any claim that a symbol is "unused", "never referenced", "dead code", or "can be removed", grep the entire repo before stating it: `Grep("<symbol>", path=worktree_root)`. If grep finds usage, do not make the claim. Past runs have had reviewers confidently declare a symbol unused when it was actively referenced — those false negatives cause real damage when applied. Include the grep result in your reasoning when you do report such a finding.
+
 ## Confidence and severity
 
 Score each finding 0–100. Only report findings ≥80. Group by severity:
