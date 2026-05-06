@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.9 — 2026-05-06
+
+README sync. Doc-only release; no SKILL.md / agents / harness changes.
+
+- **Bail criteria section**: was stale at "<50 LOC" (a pre-v0.2.3 threshold). Now reflects the full v0.2.6 list including the per-subtask <40 LOC floor, textbook-fixes criterion, tightly-coupled-by-design clause, small-fixture-scale criterion, plus the positive-signal carve-outs (concurrency/timing/state-machine, known-blind-spot validation, real-world large codebases).
+- **Workflow section**: added Stage 2 (Align) describing the `_dual-build-decisions.md` doc, with v0.2.8's hard constraint noted. Stage 4 (Cross-review) now mentions sibling-diff injection.
+- **Recent releases list**: was stale at v0.2.0/v0.2.1. Now shows v0.2.0 through v0.2.9 with one-line summaries.
+
 ## v0.2.8 — 2026-05-06
 
 Corrections + v0.2.7 rerun findings.

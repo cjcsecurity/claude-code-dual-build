@@ -33,7 +33,7 @@ The orchestrator proposes a file-disjoint task split, dispatches parallel builde
 
 ## What real cross-review catches
 
-From the [first entry](EXAMPLES.md) in our worked-examples gallery — Claude reviewing Codex's work on a `mission-control` Stop button:
+From the [first entry](EXAMPLES.md) in our worked-examples gallery — Claude reviewing Codex's work on a Stop-button feature in a local Next.js dashboard for managing command-spawned and systemd-managed processes:
 
 > **Important: SIGKILL → ESRCH race.** A process can die at t=4.9s during the 5s deadline window while the kernel keeps the port in TIME_WAIT briefly afterward. The poll then "times out" even though the process is gone, and the SIGKILL targets a dead PID — `process.kill()` throws ESRCH, which the calling code surfaces to the user as a "stop failed" error despite the process having actually exited cleanly.
 
@@ -78,10 +78,11 @@ The Claude+Codex multi-agent space already has many tools. They organize roughly
 ```
 
 1. **Decompose.** Orchestrator (Claude) splits the prompt into 2–6 file-disjoint subtasks, ~50/50 between models, then **shows the split for confirmation before dispatching anything.**
-2. **Build.** All subtasks run in parallel, each in its own worktree on its own branch. Claude subtasks via `claude-builder`; Codex subtasks via `codex-builder` (forwards to `mcp__codex__codex` with `cwd` pinned to the worktree).
-3. **Cross-review.** Each diff reviewed by the opposite model in parallel. Confidence-scored severity (Critical / Important), only findings ≥80 confidence reported.
-4. **Consolidate.** Unified report per task: builder summary + reviewer findings + recommendation (Ready / Fix / Rework).
-5. **Apply.** User decides per task — merge, rework, or abandon. **No auto-merge.**
+2. **Align (v0.2.7+).** Orchestrator writes a short `_dual-build-decisions.md` listing cross-cutting choices (validation patterns, error shapes, iteration conventions) all builders must converge on. Hard constraint (v0.2.8): only contract-required decisions; no opinionated choices that would diverge from natural single-agent behavior.
+3. **Build.** All subtasks run in parallel, each in its own worktree on its own branch. Claude subtasks via `claude-builder`; Codex subtasks via `codex-builder` (forwards to `mcp__codex__codex` with `cwd` pinned to the worktree). Builders read the alignment doc before implementing.
+4. **Cross-review.** Each diff reviewed by the opposite model in parallel. Reviewers receive the OTHER tasks' diffs as read-only context (v0.2.7+) so cross-cutting asymmetries get flagged directly. Confidence-scored severity (Critical / Important), only findings ≥80 confidence reported.
+5. **Consolidate.** Unified report per task: builder summary + reviewer findings + recommendation (Ready / Fix / Rework).
+6. **Apply.** User decides per task — merge, rework, or abandon. **No auto-merge.**
 
 ## Automated test suite
 
@@ -141,14 +142,16 @@ The skill checks all of these in Stage 0 and bails clearly if anything is missin
 
 The skill explicitly bails to single-agent if any of these hold:
 
-- Total LOC delta is **<50** across all subtasks.
-- Any subtask is **<20% of the total LOC delta** (imbalanced split defeats cross-review).
-- Decomposition is **docs-heavy** — cross-review on README/setup prose is theatre.
-- Decomposition can't be made **file-disjoint** — everything touches one hot file.
-- Time-sensitive hotfix — the workflow takes minutes, not seconds.
-- Working tree is dirty.
+- Total LOC delta is **<150** across all subtasks (raised from <50 in v0.2.3 after the bugfix-trio retro showed the original threshold was too generous).
+- Any subtask is **<40 LOC** or **<20% of the total LOC delta** — too small to give cross-review surface area.
+- All subtasks are **textbook fixes** (validation, debounce, retry, encoding, lint conformance) — cross-review value is highest on subtle interactions, not pattern-matching.
+- Decomposition is **docs-heavy**, can't be made **file-disjoint**, or is **tightly-coupled-by-design** (cross-cutting decisions span all subtasks — single-agent context produces better cross-cutting decisions than coordinated agents working from a contract).
+- **Small fixture-scale (~200 LOC) refactors** where each module's contract is locally specifiable — the workflow's overhead doesn't pay off (test-suite data: 2 of 5 such fixtures produce "self-inflicted decomposition catches" rather than real lift).
+- Time-sensitive hotfix, working tree is dirty, or exploratory/interactive work.
 
-For these, plain Claude Code or the Codex plugin's opportunistic delegation works better. Bailing is a valid output of the skill.
+**Positive-signal carve-outs** (override the bail criteria above): tasks touching **concurrency/timing/state-machine logic** (throttle, debounce, retry, locks, queues), **validation with known model blind spots** (e.g. `typeof === 'number'` letting `NaN` through), or **real-world large codebases** where single-agent context can't hold the whole problem in head. Cross-review value is high in these regardless of LOC.
+
+For everything else, plain Claude Code or the Codex plugin's opportunistic delegation works better. Bailing is a valid output of the skill.
 
 ## Cost
 
@@ -175,10 +178,17 @@ LICENSE                  # MIT
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md). Recent releases:
+See [CHANGELOG.md](CHANGELOG.md) for the full history. Recent releases (all 2026-05-06):
 
+- **v0.2.9** — README updates reflecting v0.2.5–v0.2.8 changes (bail criteria, workflow diagram, release list).
+- **v0.2.8** — Corrected the test-04 misclassification (clean dual-build win, not self-inflicted). Hard constraint on Stage 0.5 alignment doc: encode only contract-required decisions.
+- **v0.2.7** — Stage 0.5 alignment doc + sibling-diff injection in reviewers, both targeting the "self-inflicted decomposition catch" pattern.
+- **v0.2.6** — Bail criteria refined after the 5-fixture sweep: small fixture-scale + positive-signal carve-outs (concurrency/timing/state-machine, known-blind-spot validation).
+- **v0.2.5** — Third EXAMPLES entry: callback→async/await migration, the test-suite's first "dual-build clearly better" verdict (cross-review caught a NaN validation bug single-agent shipped).
+- **v0.2.4** — Pastebin retro: tightly-coupled-by-design bail criterion + reviewers must not assert on cross-task wiring + codex-builder skips git commit (orchestrator handles).
+- **v0.2.3** — Bugfix-trio retro: bail threshold <150 LOC + per-subtask <40 floor + textbook-fixes criterion + Stage 1.7 orchestrator pre-review test runs.
 - **v0.2.1** — Automated A/B test harness + Stage 0 auto-approve env gate.
-- **v0.2.0** — Improvements from four real test-run retrospectives (Stage 1.5 worktree base verification, Codex commit recovery, tighter bail criteria, reviewer hallucination guards).
+- **v0.2.0** — Improvements from four real test-run retrospectives (Stage 1.5 worktree base verification, Codex commit recovery, reviewer hallucination guards).
 - **v0.1.0** — Initial release.
 
 ## Security
