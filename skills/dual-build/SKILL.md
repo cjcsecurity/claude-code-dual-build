@@ -36,7 +36,7 @@ Bail (decline the workflow, recommend single-agent) if ANY of these hold. Bailin
 - **No file-disjoint decomposition possible** — everything touches the same hot file. Worktree isolation can't help.
 - **Tightly-coupled work** where every subtask needs every other subtask's output to test (cross-task dependencies > 1).
 - **Tightly-coupled-by-design** components — even when file-disjoint, if the design decisions span all subtasks (e.g., "the renderer's behavior depends on the API's input-validation choices," "all three layers share an error-shape contract that's invented during the build"), single-agent context produces *better* cross-cutting decisions than coordinated agents working from a pre-written contract. Cross-review can catch decomposition damage but doesn't restore the cross-cutting design insight that was lost in the split. Pastebin's 2026-05-06 test run made this concrete: baseline shipped a generic JSON error handler, language-hint auto-fencing, a slug-shape guard, WAL journal mode, and a strict expires-in-hours allowlist — all cross-cutting decisions a single head naturally produced. Dual-build, working from a contract, missed those.
-- **Small fixture-scale tasks (~200 LOC) where each module's contract is locally specifiable.** Across 5 test fixtures run on 2026-05-06 (see `EXAMPLES.md`), three reproduced the **"self-inflicted decomposition catch"** pattern: dual-build's isolated builders made different (sometimes worse) implementation choices than single-agent context naturally would, cross-review caught the bugs, baseline never had them in the first place. Net cross-review value vs. baseline was zero on those runs. Bail on small file-disjoint refactors unless one of the positive-signal carve-outs below applies.
+- **Small fixture-scale tasks (~200 LOC) where each module's contract is locally specifiable AND the bug class is symmetric (one a single-agent would naturally avoid).** Corrected after the v0.2.7 rerun: across 5 test fixtures run on 2026-05-06 (see `EXAMPLES.md`), **two** reproduced the "self-inflicted decomposition catch" pattern (`#2 pastebin`, `#N3 recursive-to-iterative`), and **two produced clean dual-build wins** (`#3 callback-async-migration`, `#N2 audit-undisclosed-bugs`) — both wins were timing/validation cases where the bug class was something single-agent would also miss. Bail on small file-disjoint refactors that are pure mechanical pattern-application; proceed if the work touches concurrency/timing/state-machine code or known-blind-spot validation patterns (see carve-outs below).
 
 #### Positive-signal carve-outs (override the bail criteria above)
 
@@ -105,7 +105,21 @@ Generate this doc by re-reading the per-task briefs from Stage 0 with an eye tow
 
 **Length**: ~5–25 lines, bullet-form. Short. If you genuinely can't identify any cross-cutting concern (truly independent modules, no shared patterns), write `(no cross-cutting concerns identified — modules are independent in style)` so the file's presence documents that no shared decisions were necessary. An empty / missing decisions doc is the failure case from earlier versions of the workflow.
 
-This stage is mandatory. Skipping it reproduces the pattern from #2/#N2/#N3 in EXAMPLES.md.
+#### Hard constraint (v0.2.8): only encode decisions the contracts strictly require
+
+The alignment doc is **structurally dangerous** — opinionated choices propagate to all builders consistently, so wrong choices ship as cross-cutting regressions. Test-05's v0.2.7 rerun made this concrete: the orchestrator wrote `§6: "treats shared-reference DAGs as cycles too. That's acceptable: the contract says 'no shared references with the input' in the output"` — but the contract said "throw on cycles", not "throw on DAGs". All four builders honored the wrong decision; the recursive baseline naturally cloned DAGs correctly. Cross-review caught the regression, but the orchestrator then failed to apply the fix and shipped the bug.
+
+**Rule**: include a decision in `_dual-build-decisions.md` ONLY if it is:
+
+1. **Forced by the contract** — e.g., the file says "throws `Error('cyclic reference')`" so error message text is locked.
+2. **Forced by the project's existing code** — e.g., `package.json` declares `"type": "module"` so ES modules are mandatory; existing tests use `node:test` so the test runner is locked.
+3. **Forced by an explicit user instruction in the task brief** — e.g., "use AbortController for timeouts".
+
+DO NOT include opinionated cross-cutting choices that diverge from what a single-agent reading the same brief would naturally choose. If you're tempted to write "this is acceptable because [pragmatic argument]" or "the test suite doesn't exercise this", that's the signal to STOP and remove the decision rather than encode it. The single-agent baseline isn't constrained by the doc you're writing — and if it would naturally make a different choice, that's the choice to default to.
+
+When in doubt, leave the decision OUT. Builders making slightly different but locally-correct choices is recoverable via cross-review (sibling-diff context exists for this). Builders making consistently-wrong choices because the orchestrator told them to is NOT recoverable — cross-review can flag it but the orchestrator may then fail to apply the fix (test-05 v0.2.7).
+
+This stage is mandatory but the doc may be near-empty. Empty-but-present (just the file with `(no cross-cutting concerns identified)`) is strictly better than encoding speculative decisions.
 
 ### Stage 1 — Parallel build
 
@@ -302,6 +316,11 @@ A typical run is: N builder invocations (Opus + Codex) + N review invocations (C
 The cross-review is what justifies the cost. On runs with substantive findings (e.g., race-condition catches, edge-case discoveries), it earns its keep. On runs with no findings — or with all findings being false positives — it's overhead. Bail criteria exist to avoid those runs.
 
 ## Changelog
+
+**v0.2.8** (2026-05-06) — corrections + v0.2.7 rerun findings.
+- **Corrected the test-04 misclassification.** The original v0.2.4 analysis used a 2-call probe that didn't trigger the throttle bug; the v0.2.7 rerun's LLM judge ran the dual-build's regression test against baseline and confirmed `[a, c, b]` instead of `[a, b, c]`. Both v0.2.4 and v0.2.7 baselines ship the throttle stale-timer bug. Test-04 is now correctly classified as a **clean dual-build win** alongside test-03. Self-inflicted-decomposition pattern now reproduces across 2 of 5 fixtures (pastebin, test-05), not 3 of 5.
+- **Hard constraint added to Stage 0.5 alignment doc.** The orchestrator must include only decisions strictly required by the contracts, the existing project code, or explicit user instructions — no opinionated cross-cutting choices that diverge from natural single-agent behavior. Test-05's v0.2.7 rerun made this concrete: the orchestrator wrote `§6: "treats DAGs as cycles too"`, the wrong-but-encoded choice propagated to all builders, cross-review caught the regression, and the orchestrator then failed to apply the fix — bug shipped. "When in doubt, leave the decision OUT" is the rule.
+- **EXAMPLES.md updates**: corrected #N2 framing (clean win), added v0.2.7 rerun results to both #N2 and #N3, updated the Pattern observation count.
 
 **v0.2.7** (2026-05-06) — two structural changes targeting the "self-inflicted decomposition catch" pattern observed across 3 of 5 fixtures (pastebin, test-04, test-05). Both changes try to prevent the divergence at source rather than catching it late.
 - **New Stage 0.5 — Cross-cutting alignment doc.** After Stage 0's task split is confirmed, the orchestrator writes `_dual-build-decisions.md` listing cross-cutting choices (validation patterns, error shapes, iteration conventions) all builders must converge on. Builders read it before implementing. Both `claude-builder` and `codex-builder` agents updated to require this read step. Cleanup added to Stage 4.

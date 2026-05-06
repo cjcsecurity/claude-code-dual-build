@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.2.8 — 2026-05-06
+
+Corrections + v0.2.7 rerun findings.
+
+### Corrected: test-04 is a clean dual-build win, not a self-inflicted catch
+
+The v0.2.4 analysis classified test-04 as "self-inflicted" because a 2-call probe (`t('a'); block; t('b')`) showed the baseline producing `[a, b]` correctly. That probe was wrong — the throttle bug only manifests on the 3-call sequence (`t('a'); t('b'); block; t('c')`). The v0.2.7 rerun's LLM judge ran the dual-build's regression test against baseline and produced `[a, c, b]` instead of `[a, b, c]`, confirming the bug ships under the contract's documented use case ("user always sees their FINAL keystroke applied"). Both v0.2.4 and v0.2.7 baselines have the bug.
+
+Re-verified independently: v0.2.4 baseline gives `[a, c]` (drops `b`); v0.2.7 baseline gives `[a, c, b]` (fires `b` after `c`); v0.2.7 dual-build gives `[a, b, c]` (cross-review fix). Test-04 is now correctly classified as a clean dual-build win alongside test-03 (NaN validation).
+
+### Self-inflicted-decomposition pattern: 2 of 5 fixtures, not 3 of 5
+
+Pattern now reproduces in:
+- `#2 pastebin` (Express default-error-handler stack-leak — baseline avoided via cross-cutting design)
+- `#N3 recursive-to-iterative` (json-clone sparse-array densification — baseline used `Object.keys`)
+
+And clean wins in:
+- `#3 callback-async-migration` (NaN validation — both baselines shipped the bug)
+- `#N2 audit-undisclosed-bugs` (throttle stale-timer — both baselines shipped the bug)
+
+Plus `#N1 bugfix-trio` no findings (textbook fixes), and `#1 mission-control` real-world catch.
+
+### Hard constraint added to Stage 0.5 alignment doc
+
+The v0.2.7 rerun of test-05 surfaced a new failure mode: the orchestrator's alignment doc can encode opinionated cross-cutting choices that propagate as consistent regressions to all builders. Specifically, `_dual-build-decisions.md §6` said "treats shared-reference DAGs as cycles too. That's acceptable: the contract says 'no shared references in the output'." But the contract said "throw on cycles", not "throw on DAGs". The recursive baseline naturally cloned DAGs correctly; the v0.2.7 dual-build threw `Error('cyclic reference')` on every DAG input. Cross-review caught the regression — and then the orchestrator failed to apply the fix and shipped the bug.
+
+**Rule**: the alignment doc must encode ONLY decisions strictly required by:
+1. The contracts (forced error messages, forced exports)
+2. Existing project code (forced module type, forced test runner)
+3. Explicit user instructions
+
+NOT opinionated choices that diverge from natural single-agent behavior. "When in doubt, leave the decision OUT." Empty-but-present (`(no cross-cutting concerns identified)`) is strictly better than encoding speculative cross-cutting decisions.
+
+### v0.2.7 rerun cost-vs-value summary
+
+| Test | v0.2.4 | v0.2.7 rerun | Net |
+|---|---|---|---|
+| 04 audit | dual-build wins (650s) | dual-build wins (895s) | same outcome, +37% wall time |
+| 05 recursive→iter | baseline better, sparse-array fix applied (605s) | baseline better, alignment doc caused DAG regression + sparse-array bug also shipped (765s) | strictly worse |
+
+v0.2.7's alignment doc + sibling-diff injection neither helped nor hurt test-04 (other than cost), and made test-05 worse. v0.2.8's hard constraint on the alignment doc tries to recover that.
+
 ## v0.2.7 — 2026-05-06
 
 Two structural changes targeting the "self-inflicted decomposition catch" pattern from v0.2.6's findings. Both try to prevent the divergence between isolated builders at source, rather than catching it late via cross-review.

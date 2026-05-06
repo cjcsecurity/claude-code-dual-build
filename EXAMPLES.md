@@ -169,47 +169,69 @@ Reproducible from `test-suite/tests/03-callback-async-migration/setup.sh`. Run t
 
 ### Pattern observation — "self-inflicted decomposition catch"
 
-Across the 5 fixtures run on 2026-05-06, three runs (`#2 pastebin`, `#N2 audit-undisclosed-bugs`, `#N3 recursive-to-iterative`) reproduce the same pattern: **dual-build's decomposed builders introduce a bug that single-agent context naturally avoids; the cross-review catches the bug; net value vs. baseline is zero or negative.** Only the `#3 callback-async-migration` run produced a clean dual-build win — and that run had a specific failure mode (`typeof === 'number' && <= 0` letting `NaN` through) that the single-agent baseline ALSO shipped.
+Across the 5 fixtures run on 2026-05-06, **two runs** (`#2 pastebin`, `#N3 recursive-to-iterative`) reproduce the pattern: dual-build's decomposed builders introduce a bug that single-agent context naturally avoids; cross-review catches the bug; net value vs. baseline is zero. Two runs produce **clean dual-build wins** (`#3 callback-async-migration`, `#N2 audit-undisclosed-bugs`) where the bug class was something a single agent would *also* miss — e.g., NaN slipping through `typeof === 'number'` validation (test-03), or a stale-trailing-timer firing after a newer leading call (test-04). One run produced no findings (`#N1 bugfix-trio`, all textbook fixes).
 
-The pattern is reliable enough to call out in `SKILL.md` (v0.2.6 update): on small fixture-style tasks, expect cross-review to fix bugs the workflow itself created rather than catch bugs a single agent would ship. The workflow's positive value cluster is concentrated in (a) tasks where the bug class is something a single agent would *also* miss (test-03's NaN), (b) real-world large codebases where one model can't hold the whole problem in head (`#1 mission-control`), and (c) concurrency/timing/state-machine code where blind spots are common (a positive-signal carve-out the test-04 retro proposed).
+**Correction note (post-v0.2.7 rerun)**: an earlier draft of this section claimed 3 of 5 fixtures reproduced the self-inflicted pattern. That count was wrong — the test-04 misclassification came from a too-shallow probe of the baseline's throttle behavior (only 2 calls instead of the 3-call sequence that triggers the bug). The v0.2.7 rerun's LLM judge ran the dual-build's regression test against the baseline and produced `[a, c, b]` instead of `[a, b, c]`, confirming the baseline ships the same bug. See #N2's "Correction" section.
+
+So the workflow's positive value cluster after the corrected analysis: (a) tasks where the bug class is something a single agent would *also* miss (test-03 NaN, test-04 throttle), (b) real-world large codebases where one model can't hold the whole problem in head (`#1 mission-control`), (c) concurrency/timing/state-machine code where blind spots are common. The pure-mechanical-fix scenarios (test-01, parts of pastebin, parts of test-05) remain bail-worthy.
 
 ### #N2 — audit of utility modules with undisclosed bugs (2026-05-06)
+
+**Note (correction post-v0.2.7 rerun)**: this entry was originally classified as "self-inflicted decomposition catch" because the v0.2.4 sandbox baseline appeared to handle the throttle case correctly. That was wrong — my probe used only 2 calls (`t('a'); block; t('b')`), which doesn't trigger the bug. The 3-call sequence (`t('a'); t('b'); block; t('c')`) reveals the bug in BOTH baselines (v0.2.4 and v0.2.7). This entry is now classified as a **clean dual-build win** alongside `#3` and `#4` above. The "Correction" section at the bottom has the verified-against-3-call-probe results.
 
 **Test fixture**: 4 utility modules in `lib/` (`throttle`, `csv-parse`, `flatten`, `format`), each with a real bug. Some tests already pass; others fail. Builder must read source + failing tests, identify each bug, and fix. See `test-suite/tests/04-audit-undisclosed-bugs/`.
 
 **Note on fixture quality**: the four module sources contained `// BUG:` comments that gave away the explicit bugs. Both runs used those as hints rather than auditing from scratch. The cross-review finding below was an *additional* bug the comments did NOT mark, so it's still a fair test of cross-review's adversarial-eyes value beyond what the test suite + comments gave away. Future revision should strip the `// BUG:` comments.
 
-| Metric | Dual-build | Baseline |
-|---|---|---|
-| Acceptance | PASS (17/17 tests) | PASS (14/14 tests) |
-| Wall time | 650s | 133s |
-| Subagent dispatches | 8 (4 builders + 4 reviewers) | 0 |
-| Cross-review findings | **1 Critical, 0 Important across 4 tasks** | n/a |
-| LLM-judge verdict | **baseline better** | n/a |
+| Metric | Dual-build (v0.2.4) | Baseline (v0.2.4) | Dual-build (v0.2.7 rerun) | Baseline (v0.2.7 rerun) |
+|---|---|---|---|---|
+| Acceptance | PASS (17/17 tests) | PASS (14/14 tests) | PASS | PASS |
+| Wall time | 650s | 133s | 895s | 168s |
+| Subagent dispatches | 8 | 0 | 8 | 0 |
+| Cross-review findings | 1 Critical | n/a | 1 Important | n/a |
+| LLM-judge verdict | (originally) baseline better — corrected | n/a | **dual-build clearly better** | n/a |
 
 #### What cross-review caught
 
-Codex's review of T1 (Claude-built throttle) flagged a real Critical bug not pinned by the existing tests:
+Codex's review of T1 (Claude-built throttle) flagged a real bug not pinned by the existing tests:
 
-> **Critical** — [lib/throttle.js:18] Score: 92. If a trailing timer is due but has not executed yet, a new call after the window takes the leading path and leaves the old timer active. Repro shape: `t('a'); t('b');` block synchronously past `ms`; `t('c')` produces `['a', 'c', 'b']`, so stale trailing args fire after a newer leading call.
+> **Critical/Important** — [lib/throttle.js]. If a trailing timer is due but has not executed yet, a new call after the window takes the leading path. Repro: `t('a'); t('b');` block synchronously past `ms`; `t('c')` produces `['a', 'c', 'b']`, so stale trailing args fire after a newer leading call.
 
-Real bug, real catch. Applied as `251423c` (`sandbox-dual-build/lib/throttle.js:18-25`, `clearTimeout` on the leading path).
+Both v0.2.4 and v0.2.7 dual-build runs caught and fixed this. The fix flushes the pending trailing args in the leading path before firing the new leading call.
 
-#### What the LLM judge noticed
+#### Correction — what the LLM judge actually showed (v0.2.7 rerun)
 
-> "The cross-review catch landed as `251423c`, which prepends a `clearTimeout` on the leading path. Compare the **baseline** at `baseline.diffs/fix-utility-module-bugs.patch:107-114`: the baseline already cleared the stale trailing timer in the leading path on the first try. So the 'real bug the cross-review caught' was an artifact of the dual-build process itself (Claude builder + Codex reviewer), not a defect baseline missed."
+The v0.2.7 rerun's judge ran dual-build's regression test against the baseline:
 
-Verified directly: `node -e "...sync-block past window then call..."` against the baseline produces `['a', 'b']` (correct). The single-agent baseline's `if (remaining <= 0) { if (timer) clearTimeout(timer); ... }` shape avoided the bug at first authorship.
+> "I ran the dual-build's regression test against the baseline implementation:
+> ```
+> + actual: [ 'a', 'c', 'b' ]
+> - expected: [ 'a', 'b', 'c' ]
+> ```
+> Baseline produces saves out of order. Under the contract's documented use case ("rate-limit a save-on-keystroke callback such that the user always sees their FINAL keystroke applied"), this means the user's `'b'` keystroke gets persisted *after* `'c'` — wrong for save semantics."
 
-T2/T3/T4 cross-reviews returned only Praise. The dual-build retro acknowledged this directly: *"three of four cross-reviews produced only praise — exactly the v0.2.3 changelog's complaint about textbook fixes."* Net cross-review value vs. baseline: zero.
+Re-verified independently against both baselines:
 
-#### Useful by-product — the dual-build retro proposed a positive-signal carve-out
+```
+$ node -e "...t('a'); t('b'); block 100ms; t('c')..."
+v0.2.4 baseline:    [ 'a', 'c' ]            ← drops 'b' entirely; bug
+v0.2.7 baseline:    [ 'a', 'c', 'b' ]       ← fires 'b' after 'c'; bug
+v0.2.7 dual-build:  [ 'a', 'b', 'c' ]       ← cross-review fix; correct
+```
 
-Even with a "baseline better" verdict, the retro identified a calibration insight worth promoting to the skill:
+Both baselines ship a bug. Dual-build's cross-review caught it. **This is a clean win**, mismarked in the original analysis because the v0.2.4 probe used only 2 calls and missed the 3-call manifestation.
 
-> "Timing-sensitive primitives (throttle, debounce, retry, locks) are a category where cross-review pays off even when the LOC count says otherwise. … The throttle finding here would have been found by a careful single-agent run too, but only if the model thought to consider sync-blocking — and that's exactly the kind of thing fresh adversarial eyes catch reliably."
+#### v0.2.7 alignment doc + sibling-diff impact
 
-Promoted to v0.2.6's bail criteria as a positive-signal carve-out for concurrency/timing/state-machine code.
+The v0.2.7 rerun's dual-build retro reported:
+
+> "Cross-cutting decisions doc (Stage 0.5, v0.2.7) was a wash this run — no asymmetries surfaced because each module's idiom was forced by its problem (state machine for CSV, `forEach` for sparse arrays, `setTimeout` for timing). The doc didn't add value but didn't cost much either (~10 LOC of upfront writing). Sibling-diff injection (v0.2.7) was also a wash — reviewers correctly noted 'no problematic asymmetry' but didn't surface anything actionable from cross-task comparison."
+
+Both v0.2.4 and v0.2.7 caught the same bug; v0.2.7 was just slower (~37% wall time overhead). The improvements neither helped nor hurt this fixture.
+
+#### Why a single-agent flow would have missed it
+
+The bug is a sync-blocking-then-call race: the trailing timer is scheduled but the synchronous block past the window means the leading branch fires before the timer's callback. Both single-agent baselines (v0.2.4 and v0.2.7) failed to handle this — the contract's intent ("user always sees their FINAL keystroke") is subtle enough that without thinking explicitly about the block-past-window case, you write code that drops or reorders args. Cross-review's fresh-eyes pass surfaces exactly this kind of timing edge case.
 
 ---
 
@@ -241,9 +263,39 @@ Same shape as #N2 and #2 (pastebin). The dual-build retro doesn't quite acknowle
 
 #### What this calibrates
 
-The pastebin run (#2) first surfaced the "tightly-coupled-by-design" bail criterion. Test-04 + test-05 reproduce a related but distinct pattern: **even on file-disjoint tasks where the contract is well-specified, an isolated builder reading only their own brief makes different (sometimes worse) implementation choices than a single-agent context that holds the whole problem.** The cross-review reliably catches these — but the workflow's overall cost-vs-value math depends on whether single-agent context naturally avoided the same mistake.
+The pastebin run (#2) first surfaced the "tightly-coupled-by-design" bail criterion. Test-05 reproduces a related but distinct pattern: **even on file-disjoint tasks where the contract is well-specified, an isolated builder reading only their own brief makes different (sometimes worse) implementation choices than a single-agent context that holds the whole problem.** The cross-review reliably catches these — but the workflow's overall cost-vs-value math depends on whether single-agent context naturally avoided the same mistake.
 
 For the v0.2.6 skill update, this means the bail criteria should add: *"on small (~200 LOC) fixture-style tasks where each module's contract is locally specifiable, expect cross-review to fix decomposition-introduced bugs rather than catch bugs single-agent would ship. Bail unless the task touches concurrency/timing/state-machine logic or the codebase is large enough that single-agent context can't hold it."*
+
+#### v0.2.7 rerun results — alignment doc caused a NEW regression
+
+Re-ran the same fixture against v0.2.7 (alignment doc + sibling-diff injection). Result: dual-build was **worse** than v0.2.4 because the orchestrator's `_dual-build-decisions.md` Section 6 made an opinionated cross-cutting decision that propagated to all builders:
+
+> ## 6. Cycle detection strategy (`json-clone`)
+> - Use a `Map` keyed by source object identity (`map.set(src, clone)`).
+> - Before processing a child, check `map.has(child)`. If yes, throw `new Error('cyclic reference')`.
+> - **This treats shared-reference DAGs as cycles too.** That's acceptable: the contract says "no shared references with the input" in the output, and the test suite does not exercise DAG inputs.
+
+The cross-reviewer (Codex) caught this as a regression vs. the recursive baseline:
+
+> "[lib/json-clone.js:33] `seen` is global 'ever seen' state, so DAG inputs falsely throw `Error('cyclic reference')`. The recursive implementation would clone both entries independently."
+
+Real, correct catch. **But the dual-build orchestrator failed to apply the fix and merged anyway** — the bug shipped in the merged result. The v0.2.7 LLM judge confirmed:
+
+> "So the cross-review identified the regression, but the dual-build orchestrator merged anyway and only documented the issue in RETRO.md. The retro's own framing ('self-inflicted by Stage 0.5 decisions doc, net cross-review value zero') understates this: cross-review *did* catch a bug that *did* ship. The baseline retro independently noticed the same ambiguity and resolved it correctly."
+
+Verified directly:
+
+```
+v0.2.4 baseline:    sparse OK,  DAG OK
+v0.2.4 dual-build:  sparse OK (cross-review fix applied),  DAG ERROR (silent regression — not caught)
+v0.2.7 baseline:    sparse OK,  DAG OK
+v0.2.7 dual-build:  sparse BUG (lost the fix),  DAG ERROR (cross-review caught + flagged but orchestrator didn't apply)
+```
+
+v0.2.7 verdict: **baseline better** (LLM judge). This is the second self-inflicted catch from this fixture, but worse: in v0.2.4 cross-review at least applied the sparse-array fix; in v0.2.7 cross-review caught the DAG regression and the orchestrator failed to apply the fix.
+
+**Direct lesson for v0.2.8**: the alignment doc must encode only decisions the contracts strictly require, not opinionated choices that diverge from natural single-agent behavior. §6's "treat DAGs as cycles" had no contract basis — the contract said "throw on cycles", not "throw on DAGs". v0.2.8 SKILL.md adds that constraint to Stage 0.5. This finding alone justifies the test-suite re-run as v0.2.7 was committed without one.
 
 ---
 
