@@ -150,6 +150,16 @@ For each subtask's worktree:
 
 Why centralize test execution in the orchestrator: Codex reviewers run in `read-only` sandbox and cannot execute tests; Claude reviewers can but shouldn't run tests redundantly across N parallel reviewer dispatches. Centralizing gives every reviewer the same verified ground truth and the result is included in their brief.
 
+#### Shared-test-file deletion gotcha
+
+If any subtask owns the deletion of a shared test file that imports the OLD API of all modules (e.g., a `baseline.test.js` written against pre-migration callback signatures), the other subtasks' worktrees will hang or fail when the full test suite runs — they migrated their own module to the new API but still have the old shared test file pointing at every other (still pre-migration in their worktree) module. The whole-suite test run hangs on never-firing callbacks or fails on signature mismatches, which is a misleading signal: the per-module changes themselves are fine.
+
+Detection: if Stage 1.7 reports a hang or full-suite FAIL in N-1 of the N worktrees while the Nth worktree (the one owning the deletion) passes, that's the pattern.
+
+Workaround: in those N-1 worktrees, run only the per-task test file (`node --test test/<module>.test.js` or equivalent) and pass that PASS/FAIL into the reviewer brief. Note in the brief that the full-suite hang/fail was a known cross-task isolation artifact, not a real regression. The merged result will exercise the full suite cleanly post-merge — that's the post-merge verification step.
+
+Surfaced by the 2026-05-06 callback-async migration test fixture (test-03). See EXAMPLES.md #3.
+
 ### Stage 1.8 — Per-task failure handling
 
 - **Builder returns Blocked or errored**: do NOT cancel the others. Report after all builders finish; ask whether to abort, retry that subtask, or proceed without it.
@@ -238,6 +248,10 @@ A typical run is: N builder invocations (Opus + Codex) + N review invocations (C
 The cross-review is what justifies the cost. On runs with substantive findings (e.g., race-condition catches, edge-case discoveries), it earns its keep. On runs with no findings — or with all findings being false positives — it's overhead. Bail criteria exist to avoid those runs.
 
 ## Changelog
+
+**v0.2.5** (2026-05-06) — based on the test-03 callback→async/await migration A/B run, which produced the test suite's first **"dual-build clearly better"** LLM-judge verdict (cross-review caught a `NaN` validation bug that single-agent baseline shipped + zero NaN tests):
+- **Stage 1.7 — shared-test-file deletion gotcha**: documented the hang/fail pattern when one subtask owns the deletion of a shared test file. N-1 sibling worktrees see hangs or signature-mismatch failures during the full-suite run; workaround is to run only the per-task test file and note the cross-task isolation artifact in the reviewer brief. Surfaced by test-03 where T1 owned the deletion of `test/baseline.test.js` (which imported all four callback APIs).
+- **EXAMPLES.md updated**: new Section 1 entry `#3 — callback → async/await migration test fixture` with the NaN-validation cross-review catch, the 2-line `node -e` post-deploy exploit demonstration, and calibration findings (baseline auto-invocation suppression, shared-test-file gotcha, cross-review depth asymmetry continues but doesn't predict who catches the bug).
 
 **v0.2.4** (2026-05-06) — based on the pastebin test-suite run that produced a real cross-review catch (Express default-error-handler stack-leak in dev mode) and surfaced two structural improvements:
 - **Reviewers must NOT assert on cross-task wiring.** A reviewer only sees one task's isolated worktree; sibling tasks aren't merged in. Pastebin's T2 reviewer falsely claimed `cleanupExpired()` was never called when it actually lives in T1's worktree. Reviewer prompts now explicitly forbid this — surface as "Cross-task contract — orchestrator spot-check on merge" instead of Critical/Important.

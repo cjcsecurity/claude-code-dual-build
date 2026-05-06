@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.2.5 — 2026-05-06
+
+Driven by the test-03 callback→async/await migration A/B run — the test suite's first **"dual-build clearly better"** LLM-judge verdict. Cross-review (Codex on T3) caught a `NaN`-validation bug single-agent baseline shipped, with zero NaN tests in baseline's test suite. Verifiable in 2 seconds via a `node -e` one-liner against both sandboxes.
+
+### New EXAMPLES.md entry: #3 callback → async/await migration
+
+First fixture-based clean A/B win. Cross-review caught `typeof opts.timeoutMs !== 'number' || opts.timeoutMs <= 0` letting `NaN` slip through (`typeof NaN === 'number'` is true; `NaN <= 0` is false). Codex reviewer score 86; fix landed pre-merge with `Number.isFinite()`. Baseline (single-agent Claude opus-4-7, 258s, 25 tests) shipped the identical buggy pattern. The 2-line `node -e` exploit makes the divergence directly observable post-deploy.
+
+LLM-judge verdict: **dual-build clearly better** — first such verdict in the test-suite history (prior runs: bugfix-trio "baseline better, no findings"; pastebin "baseline better, with footnote about self-inflicted decomposition wound").
+
+### New test fixture: 03-callback-async-migration
+
+Four file-disjoint callback-style modules (`cache.js`, `file-ops.js`, `http-fetch.js`, `job-queue.js`), ~50 LOC each, with header-comment "contract notes" specifying invariants that mechanical promisify can break (ENOENT→null, at-most-once settlement, tmp cleanup on rename failure, halt-on-error, cancel between iterations). Designed to clear the bail criteria (>150 LOC total, ≥40 LOC per subtask, NOT textbook) AND to live below a single-agent's typical test-coverage instinct so cross-review has surface area to add value.
+
+### Stage 1.7: shared-test-file deletion gotcha
+
+Documented the hang/fail pattern when one subtask owns deletion of a shared test file: N-1 sibling worktrees see hangs or signature mismatches during the full-suite run because the shared test file still imports the OLD API of the modules they migrated. Workaround: run only the per-task test file and pass that into the reviewer brief, noting the cross-task isolation artifact. Surfaced by test-03 where T1 owned the deletion of `test/baseline.test.js`.
+
+### Calibration findings codified
+
+- **Baseline prompts auto-invoke `/dual-build` when the task description matches the skill's "use when" criteria.** First baseline run on test-03 silently no-op'd because `claude -p` exited cleanly during Stage 0's confirmation pause. Test fixture's `prompt-baseline.md` now closes with explicit `/dual-build` suppression. Pattern is now documented for future fixture authors.
+- **Cross-review depth asymmetry continues** (Codex reviews lighter than Claude reviews on average) — but the model with the lighter review on a given run might be the one that catches the bug. test-03's only Important finding came from a Codex reviewer.
+
 ## v0.2.4 — 2026-05-06
 
 Driven by the pastebin test-suite run + LLM judge verdict ("baseline better, *with footnote*"). The pastebin's cross-review caught a real Express-default-error-handler stack-leak bug — but the judge surfaced that the baseline never had the bug because single-agent context produced a generic JSON error handler naturally. Net cross-review value: recovering from a self-inflicted decomposition wound, not catching a bug a single agent would have shipped.

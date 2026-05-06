@@ -92,6 +92,79 @@ The other two skill improvements this run drove (also in v0.2.4):
 
 ---
 
+### #3 — callback → async/await migration test fixture (2026-05-06) — clean A/B win, demonstrable post-deploy
+
+**Test fixture**: greenfield Node project with four callback-style helper modules in `lib/` (`cache.js`, `file-ops.js`, `http-fetch.js`, `job-queue.js`), each ~50 LOC, ~200 LOC total. Each module's source has header-comment "contract notes" specifying invariants that mechanical promisify can break (ENOENT→null, at-most-once settlement, tmp cleanup on rename failure, halt-on-error in the queue, cancel between iterations). See `test-suite/tests/03-callback-async-migration/`.
+
+**Run shape**: A/B harness, both arms produced working code. Baseline rerun was needed because the original baseline auto-invoked `/dual-build` from the description match — the baseline prompt now explicitly forbids skill invocation. (See "What this run also calibrated" below.)
+
+| Metric | Dual-build | Baseline (rerun) |
+|---|---|---|
+| Acceptance | PASS (35/35 tests) | FAIL (24/25; flaky timeout test, see below) |
+| Wall time | ~25 min wall (harness reported 2400s, hit timeout flush after work was on disk) | 258s |
+| Subagent dispatches | 8 (4 builders + 4 reviewers) | 0 |
+| Cross-review findings | **0 Critical, 1 Important across 4 tasks** | n/a |
+| LLM-judge verdict | **dual-build clearly better** (`evaluate.sh` run on the consolidated results dir) | n/a |
+
+#### Finding 1 — Important: NaN slips past `typeof === 'number'` validation (T3 / `http-fetch.js`)
+
+The Claude builder for T3 wrote (verbatim):
+
+```js
+if (!opts || typeof opts.timeoutMs !== 'number' || opts.timeoutMs <= 0) {
+  throw new Error('opts.timeoutMs must be positive number');
+}
+```
+
+The Codex reviewer flagged this with score 86:
+
+> "`NaN` passes validation even though it is not `> 0`, violating the documented contract `opts.timeoutMs required and > 0 — otherwise reject with Error('opts.timeoutMs must be positive number')`. For `NaN`, both checks are false (`typeof NaN === 'number'` is true, and `NaN <= 0` is false), so the function proceeds into `setTimeout` instead of rejecting with the documented validation error. Suggested fix: use `!Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0`, and add a `NaN` test."
+
+The fix landed in the worktree before merge (`lib/http-fetch.js:24`):
+
+```js
+if (!opts || !Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0) {
+  throw new Error('opts.timeoutMs must be positive number');
+}
+```
+
+Plus a NaN/Infinity test at `test/http-fetch.test.js:117`.
+
+**Why a single-agent flow would have missed it**: the baseline rerun (single-agent Claude opus-4-7) shipped the **identical buggy pattern** at `baseline/sandbox/lib/http-fetch.js:18`, *and* its test suite contains zero `NaN` or `isFinite` references. Verified directly:
+
+```
+$ node -e "import('./lib/http-fetch.js').then(m => m.fetchJSON('http://127.0.0.1:1', { timeoutMs: NaN }).then(v=>console.log('OK:',v), e=>console.log('REJ:',e.message)))"
+# baseline:    REJ: timeout                        ← silently treats NaN as ~1ms, contract violated
+# dual-build:  REJ: opts.timeoutMs must be positive number   ← contract honored
+```
+
+Same starter, same prompt, same model class on both sides — the only difference is the cross-review pass. Single-agent didn't catch it. Cross-review did. The test the single-agent wrote wouldn't have caught it post-deploy either; this would have shipped.
+
+#### Finding 2 — bonus: dual-build wrote a more rigorous timeout test
+
+Not a Critical/Important finding per the framework, but worth noting because it shows up in the acceptance asymmetry.
+
+- **Baseline timeout test** (`test/http-fetch.test.js:75-87`): connects to `http://127.0.0.1:1/x` with `timeoutMs: 1` and asserts the rejection matches `/timeout/`. This is racy: on a fast host, `connect ECONNREFUSED` returns before 1ms elapses and the assertion fails with `'connect ECONNREFUSED 127.0.0.1:1'` instead. The test passed on the migration host but fails on this host on subsequent runs — the acceptance check on the consolidated results dir flipped to FAIL because of it.
+- **Dual-build timeout test** (`test/http-fetch.test.js:59-87`): spins up a real `http.createServer` whose handler sleeps past `timeoutMs` before responding, then asserts the rejection. No race against transport timing.
+
+Same task, same prompt, same model, but dual-build's rigor on the test path was higher. Plausible mechanism: T3's reviewer specifically flagged "add a NaN test", which lifted the bar on the whole `test/http-fetch.test.js` quality.
+
+The LLM judge surfaced a related symmetric observation worth pinning: the baseline retro confidently described its own port-1 timeout test as *"deterministically triggers the timeout-then-error race."* It does not — that's the kind of confidently-wrong self-assessment cross-review exists to backstop. Single-agent's blind spot is also "didn't notice it had a blind spot."
+
+Honesty cuts both ways: the judge noted the baseline's `job-queue.js` `while(true)` rewrite is slightly *cleaner* than dual-build's equivalent. The win is on contract correctness and test rigor, not across-the-board code quality.
+
+#### Verifiability
+
+Reproducible from `test-suite/tests/03-callback-async-migration/setup.sh`. Run the A/B with `DUAL_BUILD_TIMEOUT=2400 ./run-tests.sh callback-async-migration` and inspect both `sandbox-dual-build/lib/http-fetch.js` and `sandbox-baseline/lib/http-fetch.js`. The NaN exploit one-liner above runs against both directly and shows the divergence in 2 seconds.
+
+#### What this run also calibrated
+
+1. **Baseline prompts must explicitly suppress `/dual-build` auto-invocation when the task description matches the skill's "use when" criteria.** The first baseline run in this fixture auto-invoked `/dual-build` from the description match (multi-file file-disjoint refactor with parallel slices), then `claude -p` exited cleanly during the Stage 0 confirmation pause without doing any work — a non-interactive session can't satisfy the pause. Fixture's `prompt-baseline.md` now closes with: *"Important: complete this task as a single Claude session using direct file edits. Do NOT invoke the `/dual-build` skill or any parallel-agent orchestration — this is the single-agent A/B control arm. The prior phrasing about file-disjoint modules describes the codebase shape, not a workflow request."* Without this, baseline runs on shapes that match the skill description silently no-op.
+2. **The "T1 owns the deletion of a shared baseline test file" pattern leaves sibling worktrees in a state where the full suite hangs.** When T1's worktree deletes `test/baseline.test.js` (which imports the *callback* APIs of all four modules), the other three worktrees have callback-imports against modules they migrated to async — so `await ... done()` never fires, the suite hangs. The orchestrator worked around it by running per-task test files directly. Worth a Stage 1.7 note in the skill: "if any subtask owns a deletion of a shared test file, fall back to per-task tests for the other worktrees".
+3. **Cross-review depth asymmetry continues.** Codex's review of T4 was lighter than the Claude reviews of T1/T2 (paragraph-per-finding), but on T3 it was Codex that produced the only Important finding of the run. The asymmetry doesn't reduce to "Codex reviews are useless" — the model that reviews on a given run might be the one that catches the bug.
+
+---
+
 ## Negative results
 
 ### #N1 — bugfix-trio test-suite run (2026-05-06)
