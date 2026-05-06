@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.1 — 2026-05-06
+
+Added an automated A/B test harness for the skill itself.
+
+### Test suite
+
+- New `test-suite/` directory with `run-tests.sh` orchestrator and `evaluate.sh` LLM-judge.
+- Auto-discovers tests under `test-suite/tests/<name>/` — drop in 4 files (`setup.sh`, `prompt-dual-build.md`, `prompt-baseline.md`, `acceptance.sh`) to add a test. ~15-30 min per fixture.
+- Per test: runs the same task with `/dual-build` and again as a single-agent baseline in fresh sandboxes; captures stream JSON, RETRO.md, git logs, per-branch diffs, acceptance PASS/FAIL, wall time. `evaluate.sh` then sends both retros + diffs to a separate Claude judge for an A/B verdict.
+- Two starter fixtures: `01-bugfix-trio` (Express app with 3 known bugs — validation crash, timezone, debounce) and `02-pastebin` (greenfield markdown pastebin from empty scaffold).
+- `test-suite/README.md` documents the harness layout, prerequisites, and the four-file convention for adding tests.
+
+### Skill
+
+- **Stage 0 auto-approve mode** (`DUAL_BUILD_AUTO_APPROVE=1` env var). When set, the orchestrator skips the user-confirmation pause, dumps the proposed split to `_dual-build-plan.md`, and proceeds directly to Stage 1. Required for the unattended test harness; not recommended for interactive use.
+
 ## v0.2.0 — 2026-05-06
 
 Improvements based on four real test-run retrospectives across user projects (OSINT-Extension, FinancialResearch, SecureCatch, mission-control). The retrospectives surfaced one critical workflow bug, two recurring failure modes, and a class of false-positive findings that needed explicit guardrails.

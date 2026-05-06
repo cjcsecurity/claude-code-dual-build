@@ -105,6 +105,12 @@ A typical 4-subtask run is ~8 model calls (4 builds + 4 reviews) plus orchestrat
 
 [`EXAMPLES.md`](EXAMPLES.md) is a gallery of real cross-review catches from runs against actual codebases — the load-bearing artifacts that demonstrate what the workflow uniquely produces vs. self-reported numbers. The first entry shows two real edge-case bugs that Claude reviewing Codex's work caught on a `mission-control` task.
 
+## Automated test suite
+
+[`test-suite/`](test-suite/) is an A/B harness that runs the same coding task twice — once with `/dual-build`, once with a single-agent baseline — and (optionally) sends both retros to a Claude-as-judge for an automated verdict. Adding a new test is a 4-file drop: `setup.sh`, `prompt-dual-build.md`, `prompt-baseline.md`, `acceptance.sh`. See [`test-suite/README.md`](test-suite/README.md) for the layout and conventions.
+
+The harness uses `DUAL_BUILD_AUTO_APPROVE=1` to skip Stage 0 user-confirmation in unattended runs. That env var only affects automation; interactive use of `/dual-build` keeps the pause.
+
 ## Files
 
 ```

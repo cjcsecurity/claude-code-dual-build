@@ -75,6 +75,8 @@ Each subtask must specify:
 
 **Show the split to the user and wait for confirmation before dispatching builders.** If they redirect (reassign tasks, adjust scope, add/remove a subtask), accept and re-plan. Do not proceed without explicit go-ahead — the parallel build phase will spawn N agents and is non-trivial to abort cleanly.
 
+**Auto-approve mode (unattended runs):** if the env var `DUAL_BUILD_AUTO_APPROVE=1` is set (check with `Bash(echo "${DUAL_BUILD_AUTO_APPROVE:-0}")`), skip the user-confirmation pause. Write the proposed split to `_dual-build-plan.md` in the working directory for asynchronous review and proceed directly to Stage 1. Use only for unattended/benchmark runs (e.g., the test harness in the repo's `test-suite/`). Interactive use should keep the pause — the pause exists for a reason.
+
 ### Stage 1 — Parallel build
 
 Once the user confirms the split, dispatch all builders in a SINGLE message with N parallel `Agent` tool calls.
