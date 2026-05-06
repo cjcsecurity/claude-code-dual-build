@@ -44,6 +44,54 @@ Both findings are reproducible and concrete: a SIGTERM-signaled child that exits
 
 ---
 
+### #2 — pastebin test-suite run (2026-05-06) — caught a real bug, *with a footnote*
+
+**Test fixture**: greenfield markdown pastebin scaffold (`test-suite/tests/02-pastebin/`). Empty repo with `express`, `better-sqlite3`, `marked` installed; build the whole app from scratch.
+
+**Run**: A/B harness, both modes PASSED acceptance.
+
+| Metric | Dual-build | Baseline |
+|---|---|---|
+| Acceptance | PASS | PASS |
+| Wall time | 1214s (~20 min) | 309s (~5 min) |
+| LOC | 362 across 5 files | 309 across 4 files |
+| Cross-review findings | **0 Critical, 4 Important (3 real, 1 false positive)** | n/a |
+
+#### What cross-review caught (Codex reviewing Claude's T2 server work)
+
+> "Malformed JSON and body-limit errors will fall through to Express/finalhandler, which under the default `NODE_ENV=development` returns HTML with `err.stack`, violating the API JSON/error-leak expectations."
+
+The dual-build builder shipped this fix: explicit 400/413 JSON responses for `entity.parse.failed` and `entity.too.large` in `src/server.js:18-33`. Real bug, real shippable fix, real production-relevant security/UX issue.
+
+#### The footnote — what the LLM judge noticed
+
+The judge ran `evaluate.sh` on both runs and flagged something the retros missed:
+
+> *"The baseline never had that bug. Look at `sandbox-baseline/src/server.js:80-83`: the baseline ships a generic 4-arg JSON error handler from the start, so malformed JSON / oversized bodies return JSON 500 rather than HTML stack — no leak. The single-agent build naturally avoided the issue because it held the whole API surface in one head; the dual-build introduced it via task decomposition (T2 written against a contract, no body-parser-error pathway considered) and then the cross-review fixed it. Net cross-review value here ≈ recovering from a self-inflicted decomposition bug, not catching something a single agent would have shipped."*
+
+Plus, baseline produced UX polish dual-build missed:
+
+- `language_hint` auto-fences raw code → highlighted block
+- Slug-shape regex guard (`^[a-z0-9]{4,16}$`) → `/favicon.ico` doesn't hit the DB
+- Custom slug alphabet excluding `l`/`1`/`o`/`0`
+- `pragma journal_mode = WAL`
+- Strict `expires_in_hours` allowlist (`['1','24','168','never']`)
+
+These are **cross-cutting design decisions** a single head naturally produces while holding the whole API surface in mind. Dual-build's three coordinated agents working from a written contract missed them. The judge's verdict: **baseline better**.
+
+#### What this calibrates
+
+The bail criterion that v0.2.4 added based on this run:
+
+> **Tightly-coupled-by-design components** — even when file-disjoint, if design decisions span all subtasks (renderer behavior depends on API validation; all layers share an error-shape contract invented during the build), single-agent context produces *better* cross-cutting decisions than coordinated agents working from a pre-written contract. Cross-review catches decomposition damage but doesn't restore the cross-cutting design insight that was lost in the split.
+
+The other two skill improvements this run drove (also in v0.2.4):
+
+1. **Reviewers must NOT assert on cross-task wiring.** The Codex reviewer of T2 falsely claimed `cleanupExpired()` was never called when it lives in T1's worktree — structurally inevitable from single-worktree review. Reviewer prompts now explicitly forbid the assertion and route it to "cross-task contract — orchestrator spot-check on merge" instead.
+2. **codex-builder no longer attempts `git commit`.** The read-only-fs failure has now hit 4+ runs reliably. Codex builders stop after edits and the orchestrator commits routinely. Stage 1.6 reframed as standard flow, not recovery.
+
+---
+
 ## Negative results
 
 ### #N1 — bugfix-trio test-suite run (2026-05-06)

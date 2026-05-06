@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.2.4 — 2026-05-06
+
+Driven by the pastebin test-suite run + LLM judge verdict ("baseline better, *with footnote*"). The pastebin's cross-review caught a real Express-default-error-handler stack-leak bug — but the judge surfaced that the baseline never had the bug because single-agent context produced a generic JSON error handler naturally. Net cross-review value: recovering from a self-inflicted decomposition wound, not catching a bug a single agent would have shipped.
+
+### New bail criterion: tightly-coupled-by-design
+
+> Even when file-disjoint, if design decisions span all subtasks (renderer behavior depends on API validation; all layers share an error-shape contract invented during the build), single-agent context produces better cross-cutting decisions than coordinated agents working from a pre-written contract.
+
+The pastebin baseline shipped UX polish dual-build missed: language-hint auto-fencing, slug-shape guard for favicon avoidance, custom slug alphabet, WAL journal mode, strict `expires_in_hours` allowlist — all cross-cutting decisions a single head naturally produces.
+
+### Reviewers must not assert on cross-task wiring
+
+Pastebin's T2 reviewer falsely claimed `cleanupExpired()` was never called — but it lives in T1's worktree, which the reviewer can't see. Structurally inevitable from single-worktree review. Reviewer prompts now explicitly forbid asserting "X is unused" / "Y is never defined" for cross-task references; route to "Cross-task contract — orchestrator spot-check on merge" instead (NOT a Critical/Important finding).
+
+### codex-builder no longer attempts `git commit`
+
+The read-only-fs failure on `.git/worktrees/<id>/index.lock` has now hit 4+ runs reliably (SecureCatch, mission-control, bugfix-trio, pastebin had 2/3). v0.2.4 codex-builders stop after edits, include their intended commit message in the report, and the orchestrator commits routinely. Stage 1.6 reframed from "partial-success recovery" to "orchestrator commits Codex builder's edits (always)."
+
+### EXAMPLES.md updated
+
+- New Section 1 entry: `#2 — pastebin test-suite run` with the real cross-review catch + the judge's footnote about decomposition self-wounding + the cross-cutting-design polish baseline produced.
+
 ## v0.2.3 — 2026-05-06
 
 Improvements driven by the first end-to-end harness run (bugfix-trio A/B) — the LLM judge verdict came in as **"baseline better"**, surfacing real signal that neither retro caught.

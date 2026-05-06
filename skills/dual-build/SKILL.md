@@ -35,6 +35,7 @@ Bail (decline the workflow, recommend single-agent) if ANY of these hold. Bailin
 - **Code-vs-docs ratio is heavy on docs.** If half or more of the work is README / .env.example / CHANGELOG / setup prose, cross-review on docs is low-signal. Recommend single-agent for docs-heavy work.
 - **No file-disjoint decomposition possible** — everything touches the same hot file. Worktree isolation can't help.
 - **Tightly-coupled work** where every subtask needs every other subtask's output to test (cross-task dependencies > 1).
+- **Tightly-coupled-by-design** components — even when file-disjoint, if the design decisions span all subtasks (e.g., "the renderer's behavior depends on the API's input-validation choices," "all three layers share an error-shape contract that's invented during the build"), single-agent context produces *better* cross-cutting decisions than coordinated agents working from a pre-written contract. Cross-review can catch decomposition damage but doesn't restore the cross-cutting design insight that was lost in the split. Pastebin's 2026-05-06 test run made this concrete: baseline shipped a generic JSON error handler, language-hint auto-fencing, a slug-shape guard, WAL journal mode, and a strict expires-in-hours allowlist — all cross-cutting decisions a single head naturally produced. Dual-build, working from a contract, missed those.
 - **Time-sensitive fixes** — the workflow takes minutes, not seconds.
 - **Exploratory or interactive work** — user is steering turn-by-turn.
 - **Working tree is dirty** — uncommitted changes won't be visible to the worktrees (see prerequisites). Either commit/stash first or bail.
@@ -117,20 +118,24 @@ If a base mismatch is detected for subtask T<id>:
 
 This single check would have prevented the entire FinancialResearch run failure (2026-05-05) where every worktree was rooted at a stale base.
 
-### Stage 1.6 — Codex builder partial-success recovery
+### Stage 1.6 — Orchestrator commits Codex builder's edits (always)
 
-The codex-builder agent regularly reports `Done with caveats — edits applied but commit failed` (recurring in SecureCatch + mission-control runs). This happens when Codex's sandbox/git-add fails inside the worktree's git-metadata path. **The file edits are correct; only the commit step failed.** Treat this as routine recovery, not a workflow failure.
+As of v0.2.4, codex-builder agents do NOT attempt `git commit` themselves — the failure mode is reliable enough across runs (SecureCatch, mission-control, bugfix-trio, pastebin all hit it; pastebin had 2/3 builders fail) that preempting the attempt is cleaner than recovering from it. The orchestrator handles the commit step routinely.
 
-Recovery for each affected subtask:
+For each subtask whose builder is `codex-builder`:
 
-1. Verify with `git -C <worktree_path> status --porcelain` — there should be unstaged/uncommitted changes matching the builder's reported file list.
-2. Spot-check one changed file with the Read tool to confirm the diff matches the builder's reported summary.
-3. Commit on the builder's behalf:
+1. The builder's report includes its `git status --porcelain` output and the commit message it would have used (status: "Done — edits applied, awaiting orchestrator commit").
+2. Spot-check one changed file with Read to confirm edits match the builder's reported summary.
+3. Run the commit:
    ```
    git -C <worktree_path> add -A
-   git -C <worktree_path> commit -m "<derive-from-builder-summary>"
+   git -C <worktree_path> commit -m "<message from builder report>"
    ```
 4. Continue to cross-review.
+
+For `claude-builder` agents, the builder commits itself — no orchestrator commit step needed.
+
+If a codex-builder somehow returns a successful `git commit -h <sha>` reference (rare, but possible if the sandbox ever permits writes), skip step 3 — the commit already exists.
 
 ### Stage 1.7 — Run tests in each worktree (pre-review verification)
 
@@ -233,6 +238,10 @@ A typical run is: N builder invocations (Opus + Codex) + N review invocations (C
 The cross-review is what justifies the cost. On runs with substantive findings (e.g., race-condition catches, edge-case discoveries), it earns its keep. On runs with no findings — or with all findings being false positives — it's overhead. Bail criteria exist to avoid those runs.
 
 ## Changelog
+
+**v0.2.4** (2026-05-06) — based on the pastebin test-suite run that produced a real cross-review catch (Express default-error-handler stack-leak in dev mode) and surfaced two structural improvements:
+- **Reviewers must NOT assert on cross-task wiring.** A reviewer only sees one task's isolated worktree; sibling tasks aren't merged in. Pastebin's T2 reviewer falsely claimed `cleanupExpired()` was never called when it actually lives in T1's worktree. Reviewer prompts now explicitly forbid this — surface as "Cross-task contract — orchestrator spot-check on merge" instead of Critical/Important.
+- **codex-builder no longer attempts `git commit` at all.** The read-only-fs failure has now hit 4+ runs reliably (SecureCatch, mission-control, bugfix-trio, pastebin). Codex builders stop after edits, include their intended commit message in the report, and the orchestrator commits on their behalf as a routine step (not a "recovery path"). Stage 1.6 reframed accordingly.
 
 **v0.2.3** (2026-05-06) — based on the bugfix-trio test-suite run that completed acceptance with zero actionable cross-review findings:
 - Bail threshold: <50 LOC bumped to <150 LOC total. Three textbook bugs at 111 LOC total passed all checks but the run produced no Critical/Important findings — the threshold was too generous.

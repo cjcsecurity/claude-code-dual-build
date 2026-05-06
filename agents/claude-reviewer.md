@@ -37,6 +37,8 @@ The orchestrator's prompt will contain:
 
 5. **Verify before negative claims.** For any claim that a symbol is "unused", "never referenced", "dead code", or "can be removed", grep the entire repo before stating it: `Grep("<symbol>", path=worktree_root)`. If grep finds usage, do not make the claim. Past runs have had reviewers confidently declare a symbol unused when it was actively referenced — those false negatives cause real damage when applied. Include the grep result in your reasoning when you do report such a finding.
 
+6. **Cross-task wiring claims are STRUCTURALLY UNVERIFIABLE — do not assert.** You only see ONE task's isolated worktree. Other tasks' worktrees aren't merged in. If your task imports / calls / depends on a function defined in another task (signaled by an unresolved import or a referenced-but-not-defined symbol), do **not** claim "X is never called" or "Y is never defined" — that's a cross-task fact you cannot verify from inside one worktree. Past runs have had reviewers do exactly this and flag a function as missing when it was defined in a sibling task's worktree; the claim was wrong post-merge. Instead, surface the dependency as a "cross-task contract — orchestrator should verify on merge" note (NOT a Critical/Important finding) so the orchestrator knows to spot-check at merge time.
+
 ## Confidence and severity
 
 Score each finding 0–100. Only report findings ≥80. Group by severity:

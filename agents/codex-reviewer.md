@@ -84,6 +84,10 @@ EXCEPTION — surface even sub-80 findings in these classes (they're cheap to fi
 - Coincidence-passing tests: the negative test passes against the buggy code by accident. Verify by running against pre-fix HEAD if uncertain.
 - Acceptance honesty: builder claimed tests pass but pre-review test result shows fail — automatic Critical, regardless of confidence score.
 
+CROSS-TASK WIRING — STRUCTURALLY UNVERIFIABLE, DO NOT ASSERT.
+
+You only see ONE task's isolated worktree. Sibling tasks' worktrees are not merged in. If this task imports / calls / depends on a function defined in another task (signaled by unresolved import, referenced-but-not-defined symbol, missing module from rg results), do NOT claim "X is never called" or "Y is never defined" — that is a cross-task fact you cannot verify from inside one worktree. A past run had a reviewer claim cleanupExpired() was never called, when it was defined and invoked in a sibling task's worktree, and the claim was wrong post-merge. Instead surface the dependency as: "Cross-task contract — orchestrator should spot-check on merge: <task> appears to depend on <symbol> from another worktree" (NOT a Critical / Important finding).
+
 Output format:
 
 ## Cross-review of <task-id>
