@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.2.3 — 2026-05-06
+
+Improvements driven by the first end-to-end harness run (bugfix-trio A/B) — the LLM judge verdict came in as **"baseline better"**, surfacing real signal that neither retro caught.
+
+### Bail criteria tightened (again)
+
+- **<150 LOC total** (was <50). The bugfix-trio run was 111 LOC across 3 file-disjoint subtasks — passed the v0.2.0 gate but produced zero actionable cross-review findings. The threshold was too generous.
+- **Per-subtask floor: <40 LOC each**. Even when total LOC is fine, cross-review value is low if every individual diff is tiny.
+- **"Textbook fixes" criterion**. Validation, debounce, timezone formatting, retry, encoding, dependency bumps — obvious patterns where cross-review predictably finds nothing. If a builder could mechanically apply a textbook recipe, bail.
+
+### Stage 1.7: orchestrator pre-review test run
+
+- New mandatory step. Before dispatching reviewers, the orchestrator runs the project's test command in each worktree (`npm test` / `node --test` / `pytest` per heuristic) and includes the result in every reviewer's brief as `Pre-review test result`. Reviewers compare against the builder's claimed acceptance — mismatches are automatic **Critical** findings.
+- Why: the bugfix-trio run had a Codex reviewer report it could not run `node --test` in its `read-only` sandbox (static review only). Centralizing test execution in the orchestrator gives every reviewer the same verified ground truth and closes the "builder claims pass + reviewer can't verify" gap.
+
+### Reviewer thresholds — exception classes
+
+Reviewers (claude-reviewer, codex-reviewer) had a hard ≥80 confidence threshold. The bugfix-trio judge surfaced that this was too strict for a specific class: a T1 reviewer noticed (sub-threshold, ~70%) that the dates test coincidentally passed against buggy `getDate()` on a PT-timezone host. The reviewer dropped it. The single-agent baseline independently fixed the same issue with subprocess `TZ=UTC`/`TZ=Asia/Tokyo` forcing — producing a more robust test than the cross-reviewed version.
+
+v0.2.3 reviewer prompts now explicitly require surfacing **even sub-80 findings** in these classes:
+- **Test reliability**: passes on builder's host but may fail on others (TZ, locale, ports, mocked state)
+- **Coincidence-passing negative tests**: the test that should fail before the fix actually passes on the buggy code
+- **Acceptance honesty**: builder claimed pass but pre-review test result is fail — automatic Critical regardless of confidence
+
+### Test-suite acceptance fix
+
+- `tests/01-bugfix-trio/acceptance.sh` was discovering only `*.test.js` files. `node --test` also accepts `test/*.js`, which is what the dual-build run produced — harness reported PASS on regex-fix-detection only, not actual test execution. Fixed: discovery now covers `*.test.js`, `*.test.mjs`, `test/*.js`, `test/*.mjs`, `tests/*.js`, `tests/*.mjs`.
+
+### EXAMPLES.md restructured
+
+Now has two sections: **Cross-review catches** (mission-control entry) and **Negative results** (bugfix-trio entry with the LLM judge's verdict). The honest two-sided view is the credible one.
+
 ## v0.2.2 — 2026-05-06
 
 Visual + landing-page polish.

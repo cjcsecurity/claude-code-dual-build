@@ -15,6 +15,7 @@ The orchestrator's prompt will contain:
 - **Original brief**: the goal + brief + acceptance the builder was given
 - **File scope**: which files were declared in scope
 - **Builder's report**: the structured report the builder produced
+- **Pre-review test result**: PASS/FAIL + last ~30 lines of output, captured by the orchestrator (Stage 1.7) running the project's test command in this worktree. Treat as ground truth for the builder's claimed acceptance; do not run tests yourself (Codex `read-only` sandbox can't anyway).
 - **Review focus** (optional): specific concerns
 
 ## What to do
@@ -49,6 +50,12 @@ File scope:
 Builder's report:
 <verbatim builder report>
 
+Pre-review test result (from orchestrator, Stage 1.7):
+<PASS or FAIL>
+<last ~30 lines of test output>
+
+If the builder claimed tests pass but the pre-review test result is FAIL, that's an automatic Critical finding (acceptance dishonesty / undetected regression).
+
 <if review_focus provided: "Reviewer focus: <verbatim>">
 
 Steps:
@@ -71,6 +78,11 @@ Score each finding 0–100. Only report ≥80. Group by severity:
 - Important (80–89): real issues that should be fixed before merge.
 
 Drop everything below 80. Every finding MUST cite file:line.
+
+EXCEPTION — surface even sub-80 findings in these classes (they're cheap to fix, high-value):
+- Test reliability: passes on builder's host but may fail elsewhere (host TZ, locale, ports, env vars, mocked state)
+- Coincidence-passing tests: the negative test passes against the buggy code by accident. Verify by running against pre-fix HEAD if uncertain.
+- Acceptance honesty: builder claimed tests pass but pre-review test result shows fail — automatic Critical, regardless of confidence score.
 
 Output format:
 

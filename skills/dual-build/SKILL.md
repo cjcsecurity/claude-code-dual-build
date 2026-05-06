@@ -28,7 +28,9 @@ Use when the prompt has 2+ independently-scopable components AND quality matters
 
 Bail (decline the workflow, recommend single-agent) if ANY of these hold. Bailing is a valid output of this skill — state the reason explicitly to the user, don't force-fit:
 
-- **Single-file or <50 LOC total delta** across all subtasks. Hard threshold; not "consider." Cross-review on small changes is theatre.
+- **Single-file or <150 LOC total delta** across all subtasks. (Bumped from <50 in v0.2.3 after the 2026-05-06 bugfix-trio test run produced zero actionable cross-review findings on a 111-LOC 3-subtask split. Cross-review on small changes is theatre.)
+- **All subtasks are <40 LOC each.** Even when total LOC passes the gate above, cross-review value is low if every individual diff is tiny. Median subtask size matters as much as total.
+- **All subtasks are "textbook fixes"** — obvious patterns like adding validation, debouncing, timezone-aware date formatting, basic retry logic, simple encoding, dependency bumps, lint-rule conformance. Cross-review value is highest on subtle interactions and edge cases, not pattern-matching. If a builder could mechanically apply a textbook recipe, the reviewer is unlikely to find anything novel — confirmed by the bugfix-trio test run.
 - **Imbalanced split** — any subtask is <20% of the total LOC delta. A 90/10 split passes "file-disjoint" but defeats the cross-review purpose: the reviewer of the trivial subtask has nothing to find, and the substantive subtask gets the same scrutiny as a single-agent run.
 - **Code-vs-docs ratio is heavy on docs.** If half or more of the work is README / .env.example / CHANGELOG / setup prose, cross-review on docs is low-signal. Recommend single-agent for docs-heavy work.
 - **No file-disjoint decomposition possible** — everything touches the same hot file. Worktree isolation can't help.
@@ -130,7 +132,20 @@ Recovery for each affected subtask:
    ```
 4. Continue to cross-review.
 
-### Stage 1.7 — Per-task failure handling
+### Stage 1.7 — Run tests in each worktree (pre-review verification)
+
+Before dispatching reviewers, run the project's test command in each worktree from the orchestrator. This gives every reviewer the same verified ground truth and catches builder acceptance-claims that don't survive the test suite.
+
+For each subtask's worktree:
+
+1. Detect the test command. Heuristic order: `npm test` if `package.json` has a non-default `test` script; else `node --test` if `*.test.{js,mjs}` files exist; else `pytest` if `pyproject.toml`/`pytest.ini`/`tests/`; else skip with a note.
+2. Run from the orchestrator: `git -C <worktree_path> ... ` or `cd <worktree> && <test_cmd>`. Capture pass/fail + last ~30 lines of output.
+3. Include the result in the reviewer's brief as `Pre-review test result: PASS/FAIL` plus the captured output.
+4. If a worktree's tests FAIL but the builder's report claimed acceptance passed, that's an automatic **Important** finding ("acceptance honesty") — the orchestrator should record it before dispatching the reviewer.
+
+Why centralize test execution in the orchestrator: Codex reviewers run in `read-only` sandbox and cannot execute tests; Claude reviewers can but shouldn't run tests redundantly across N parallel reviewer dispatches. Centralizing gives every reviewer the same verified ground truth and the result is included in their brief.
+
+### Stage 1.8 — Per-task failure handling
 
 - **Builder returns Blocked or errored**: do NOT cancel the others. Report after all builders finish; ask whether to abort, retry that subtask, or proceed without it.
 - **Codex 5xx or AnyIO timeout <60s**: retry the builder ONCE before escalating. These are usually transient API issues.
@@ -218,6 +233,12 @@ A typical run is: N builder invocations (Opus + Codex) + N review invocations (C
 The cross-review is what justifies the cost. On runs with substantive findings (e.g., race-condition catches, edge-case discoveries), it earns its keep. On runs with no findings — or with all findings being false positives — it's overhead. Bail criteria exist to avoid those runs.
 
 ## Changelog
+
+**v0.2.3** (2026-05-06) — based on the bugfix-trio test-suite run that completed acceptance with zero actionable cross-review findings:
+- Bail threshold: <50 LOC bumped to <150 LOC total. Three textbook bugs at 111 LOC total passed all checks but the run produced no Critical/Important findings — the threshold was too generous.
+- Added per-subtask floor: <40 LOC per subtask → bail. Median size matters as much as total.
+- Added "textbook fixes" criterion: even at sufficient LOC, cross-review value is low when bugs follow obvious recipes.
+- Added Stage 1.7: orchestrator runs the project's test command in each worktree before dispatching reviewers and includes the result in every reviewer's brief. Codex reviewers run in `read-only` sandbox and can't execute tests; this centralizes the verification step. Builder-claims-pass + pre-review-fails is automatically Important.
 
 **v0.2.0** (2026-05-06) — based on four real test-run retrospectives across user projects (OSINT-Extension, FinancialResearch, SecureCatch, mission-control):
 - Add Stage 1.5: post-dispatch worktree base verification (FinancialResearch run had every builder rooted at a stale commit, invalidating the whole pipeline).

@@ -58,8 +58,10 @@ fi
 # Only run npm test if the package.json has a real test script (not the default no-op).
 test_files=$(find . -maxdepth 4 \
   \( -path ./node_modules -prune -o -path ./.git -prune \) -o \
-  \( -name '*.test.js' -print -o -name '*.test.mjs' -print \) 2>/dev/null \
-  | grep -v node_modules | head -5)
+  \( -name '*.test.js' -print -o -name '*.test.mjs' -print \) -o \
+  \( -path './test/*.js' -print -o -path './test/*.mjs' -print \) -o \
+  \( -path './tests/*.js' -print -o -path './tests/*.mjs' -print \) 2>/dev/null \
+  | grep -v node_modules | head -10)
 
 has_real_npm_test=0
 if [[ -f package.json ]] && grep -q '"test"' package.json 2>/dev/null && \
