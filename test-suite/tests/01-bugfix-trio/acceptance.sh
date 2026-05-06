@@ -54,8 +54,30 @@ else
   fail=1
 fi
 
-# If a test command is configured, run it
-if [[ -f package.json ]] && grep -q '"test"' package.json 2>/dev/null; then
+# Prefer test files (*.test.js / *.test.mjs) — most builders will use node --test.
+# Only run npm test if the package.json has a real test script (not the default no-op).
+test_files=$(find . -maxdepth 4 \
+  \( -path ./node_modules -prune -o -path ./.git -prune \) -o \
+  \( -name '*.test.js' -print -o -name '*.test.mjs' -print \) 2>/dev/null \
+  | grep -v node_modules | head -5)
+
+has_real_npm_test=0
+if [[ -f package.json ]] && grep -q '"test"' package.json 2>/dev/null && \
+   ! grep -q '"test": *"echo \\"Error: no test specified' package.json 2>/dev/null; then
+  has_real_npm_test=1
+fi
+
+if [[ -n "$test_files" ]]; then
+  echo "Running node --test (found: $(echo "$test_files" | wc -l) test file(s))..."
+  test_out=$(node --test 2>&1 | tail -25)
+  echo "$test_out"
+  if echo "$test_out" | grep -qE 'pass [0-9]+' && ! echo "$test_out" | grep -qE 'fail [1-9]'; then
+    echo "✓ node --test — passed"
+  else
+    echo "✗ node --test — failed"
+    fail=1
+  fi
+elif [[ "$has_real_npm_test" -eq 1 ]]; then
   echo "Running npm test..."
   if npm test --silent 2>&1 | tail -20; then
     echo "✓ npm test — passed"
@@ -63,16 +85,8 @@ if [[ -f package.json ]] && grep -q '"test"' package.json 2>/dev/null; then
     echo "✗ npm test — failed"
     fail=1
   fi
-elif command -v node >/dev/null 2>&1 && find . -maxdepth 4 -name '*.test.js' -not -path './node_modules/*' | head -1 | grep -q .; then
-  echo "Running node --test..."
-  if node --test 2>&1 | tail -20; then
-    echo "✓ node --test — passed"
-  else
-    echo "✗ node --test — failed"
-    fail=1
-  fi
 else
-  echo "(no tests detected)"
+  echo "(no test files detected — builder skipped tests)"
 fi
 
 if [[ "$fail" -eq 0 ]]; then
