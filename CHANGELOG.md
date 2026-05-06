@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.2 — 2026-05-06
+
+Visual + landing-page polish.
+
+- **Banner image** at `assets/dual-build-banner.png`, used as the README hero. 3840×1920 — also suitable for GitHub social-preview upload (Settings → Social preview → Upload image).
+- **README rebuilt** as a landing page: hero → tagline → quick start → real-bug-catch quotes from EXAMPLES.md → comparison table → workflow → install → prereqs → bail criteria. Optimized for 5-second value-prop comprehension on first scroll.
+- **Badges**: license, latest release, GitHub stars, "Claude Code compatible," "Codex compatible."
+- **Test-suite acceptance fix** (carried forward from a post-v0.2.1 commit): `tests/01-bugfix-trio/acceptance.sh` no longer false-FAILs on the default `npm init -y` no-op test script. Prefers `node --test` when test files exist.
+
 ## v0.2.1 — 2026-05-06
 
 Added an automated A/B test harness for the skill itself.
