@@ -297,6 +297,29 @@ v0.2.7 verdict: **baseline better** (LLM judge). This is the second self-inflict
 
 **Direct lesson for v0.2.8**: the alignment doc must encode only decisions the contracts strictly require, not opinionated choices that diverge from natural single-agent behavior. §6's "treat DAGs as cycles" had no contract basis — the contract said "throw on cycles", not "throw on DAGs". v0.2.8 SKILL.md adds that constraint to Stage 0.5. This finding alone justifies the test-suite re-run as v0.2.7 was committed without one.
 
+#### v0.2.8 rerun results — constraint works, but bail still applies
+
+Re-ran test-05 against v0.2.8 to validate the alignment-doc hard constraint. Recovered alignment doc explicitly says: *"(Note: the test suite only exercises the simple `o.self = o` case; do not over-broaden cycle detection to reject DAGs.)"* — directly preventing v0.2.7's §6 mistake. Verified post-merge: DAG inputs now correctly cloned (`c2.a.x: 1`, no error).
+
+| Version | Wall | Cross-review findings | Bug status | LLM verdict |
+|---|---|---|---|---|
+| v0.2.4 | 605s | 1 Important (sparse-array, applied) | sparse fixed, DAG silent regression | baseline better |
+| v0.2.7 | 765s | 1 Important (DAG, **not applied**) | sparse bug shipped, DAG regression caught but orchestrator failed to apply fix | baseline better (worse outcome) |
+| v0.2.8 | 770s | **0 findings** (clean) | DAG correct ✅, both arms have latent sparse bug not pinned by tests | baseline better (cleaner reason — dual-build just heavier) |
+
+The v0.2.8 LLM judge ran fresh and reported "baseline better" with the cleanest rationale yet:
+
+> "Zero substantive findings on either side. Total across four cross-reviews: 0 Critical, 0 Important, 8 Praise, 2 lower-confidence notes self-flagged as non-issues. The cross-review caught nothing the baseline missed, and the baseline introduced nothing dual-build needed to catch."
+
+> "Both implementations are correct, contract-preserving, and minimal-ish. Differences in shape: dual-build's json-clone is ~85 LOC with parallel `work`/`stack`/`pendingChildren` machinery; baseline's is ~32 LOC with one stack and an exit-frame pattern. Same DAG-vs-cycle semantics in roughly 1/3 the code. Subtlety the contract didn't ask for is a code-smell, not a feature."
+
+Notable additional finding: in v0.2.8, both baseline AND dual-build ship the same latent sparse-array bug (`jsonClone([, 1])` → `keys: ['0', '1']`). v0.2.4's "baseline avoided the sparse-array failure mode" was partly luck — that specific run picked `Object.keys()`-style iteration which skips holes naturally; v0.2.8 baseline picked indexed iteration which doesn't. So the sparse-array bug isn't strictly "self-inflicted by decomposition" — it depends on which iteration pattern the model happens to pick, regardless of arm.
+
+**What v0.2.8 confirms**:
+1. The Stage 0.5 hard constraint works — orchestrator now writes "do not over-broaden" guardrails rather than wrong-encoded opinions. The v0.2.7 regression is structurally prevented.
+2. Cross-review depth is well-calibrated when there's nothing to catch — 0 findings + 8 praise + 2 self-dismissed sub-threshold notes is the right shape for a clean run.
+3. Test-05 remains in bail territory regardless of how well-tuned the alignment doc is. The shape of the task (small file-disjoint refactor with locally-specifiable contracts) doesn't reward the workflow's overhead, even when the workflow runs cleanly. Bail criteria are correct.
+
 ---
 
 ### #N1 — bugfix-trio test-suite run (2026-05-06)
