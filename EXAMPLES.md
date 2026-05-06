@@ -167,6 +167,86 @@ Reproducible from `test-suite/tests/03-callback-async-migration/setup.sh`. Run t
 
 ## Negative results
 
+### Pattern observation — "self-inflicted decomposition catch"
+
+Across the 5 fixtures run on 2026-05-06, three runs (`#2 pastebin`, `#N2 audit-undisclosed-bugs`, `#N3 recursive-to-iterative`) reproduce the same pattern: **dual-build's decomposed builders introduce a bug that single-agent context naturally avoids; the cross-review catches the bug; net value vs. baseline is zero or negative.** Only the `#3 callback-async-migration` run produced a clean dual-build win — and that run had a specific failure mode (`typeof === 'number' && <= 0` letting `NaN` through) that the single-agent baseline ALSO shipped.
+
+The pattern is reliable enough to call out in `SKILL.md` (v0.2.6 update): on small fixture-style tasks, expect cross-review to fix bugs the workflow itself created rather than catch bugs a single agent would ship. The workflow's positive value cluster is concentrated in (a) tasks where the bug class is something a single agent would *also* miss (test-03's NaN), (b) real-world large codebases where one model can't hold the whole problem in head (`#1 mission-control`), and (c) concurrency/timing/state-machine code where blind spots are common (a positive-signal carve-out the test-04 retro proposed).
+
+### #N2 — audit of utility modules with undisclosed bugs (2026-05-06)
+
+**Test fixture**: 4 utility modules in `lib/` (`throttle`, `csv-parse`, `flatten`, `format`), each with a real bug. Some tests already pass; others fail. Builder must read source + failing tests, identify each bug, and fix. See `test-suite/tests/04-audit-undisclosed-bugs/`.
+
+**Note on fixture quality**: the four module sources contained `// BUG:` comments that gave away the explicit bugs. Both runs used those as hints rather than auditing from scratch. The cross-review finding below was an *additional* bug the comments did NOT mark, so it's still a fair test of cross-review's adversarial-eyes value beyond what the test suite + comments gave away. Future revision should strip the `// BUG:` comments.
+
+| Metric | Dual-build | Baseline |
+|---|---|---|
+| Acceptance | PASS (17/17 tests) | PASS (14/14 tests) |
+| Wall time | 650s | 133s |
+| Subagent dispatches | 8 (4 builders + 4 reviewers) | 0 |
+| Cross-review findings | **1 Critical, 0 Important across 4 tasks** | n/a |
+| LLM-judge verdict | **baseline better** | n/a |
+
+#### What cross-review caught
+
+Codex's review of T1 (Claude-built throttle) flagged a real Critical bug not pinned by the existing tests:
+
+> **Critical** — [lib/throttle.js:18] Score: 92. If a trailing timer is due but has not executed yet, a new call after the window takes the leading path and leaves the old timer active. Repro shape: `t('a'); t('b');` block synchronously past `ms`; `t('c')` produces `['a', 'c', 'b']`, so stale trailing args fire after a newer leading call.
+
+Real bug, real catch. Applied as `251423c` (`sandbox-dual-build/lib/throttle.js:18-25`, `clearTimeout` on the leading path).
+
+#### What the LLM judge noticed
+
+> "The cross-review catch landed as `251423c`, which prepends a `clearTimeout` on the leading path. Compare the **baseline** at `baseline.diffs/fix-utility-module-bugs.patch:107-114`: the baseline already cleared the stale trailing timer in the leading path on the first try. So the 'real bug the cross-review caught' was an artifact of the dual-build process itself (Claude builder + Codex reviewer), not a defect baseline missed."
+
+Verified directly: `node -e "...sync-block past window then call..."` against the baseline produces `['a', 'b']` (correct). The single-agent baseline's `if (remaining <= 0) { if (timer) clearTimeout(timer); ... }` shape avoided the bug at first authorship.
+
+T2/T3/T4 cross-reviews returned only Praise. The dual-build retro acknowledged this directly: *"three of four cross-reviews produced only praise — exactly the v0.2.3 changelog's complaint about textbook fixes."* Net cross-review value vs. baseline: zero.
+
+#### Useful by-product — the dual-build retro proposed a positive-signal carve-out
+
+Even with a "baseline better" verdict, the retro identified a calibration insight worth promoting to the skill:
+
+> "Timing-sensitive primitives (throttle, debounce, retry, locks) are a category where cross-review pays off even when the LOC count says otherwise. … The throttle finding here would have been found by a careful single-agent run too, but only if the model thought to consider sync-blocking — and that's exactly the kind of thing fresh adversarial eyes catch reliably."
+
+Promoted to v0.2.6's bail criteria as a positive-signal carve-out for concurrency/timing/state-machine code.
+
+---
+
+### #N3 — recursive→iterative migration (2026-05-06)
+
+**Test fixture**: 4 recursive functions (`tree-sum`, `json-clone`, `list-reverse`, `expr-eval`) that overflow the stack on deep input. Convert each to iterative form, preserving documented contracts (purity for `list-reverse`, cycle-rejection for `json-clone`, operator precedence for `expr-eval`). Tests pin both standard-input behavior AND deep-input no-overflow. See `test-suite/tests/05-recursive-to-iterative/`.
+
+| Metric | Dual-build | Baseline |
+|---|---|---|
+| Acceptance | PASS (16/16 tests) | PASS (16/16 tests) |
+| Wall time | 605s | 202s |
+| Subagent dispatches | 8 (4 builders + 4 reviewers) | 0 |
+| Cross-review findings | **0 Critical, 1 Important across 4 tasks** | n/a |
+| LLM-judge verdict | **baseline better** | n/a |
+
+#### What cross-review caught
+
+Codex's review of T2 (Claude-built json-clone iterative version):
+
+> "[lib/json-clone.js:48] … Sparse array holes are converted into own `undefined` elements. The previous recursive `value.map(jsonClone)` preserved holes; this loop reads every index and writes `parent[key] = src` for missing slots, so `jsonClone([, 1])` produces a clone where `0 in clone === true`."
+
+Real catch. Fix applied: guard with `if (i in src)` before pushing array work items.
+
+#### What the LLM judge noticed
+
+> "Real bug, real catch — but the baseline never had it. Baseline `lib/json-clone.js:24` uses `Object.keys(src)` uniformly for both arrays and objects, and `Object.keys` skips holes natively. … Dual-build introduced the bug by choosing a different iteration strategy (`for (let i = 0; i < src.length; i++)`) and then paid for cross-review to find it. The baseline avoided the entire failure mode by picking the simpler approach. **Net cross-review lift over baseline: zero.**"
+
+Same shape as #N2 and #2 (pastebin). The dual-build retro doesn't quite acknowledge this — its verdict is "yes, would reach for this approach" — but the LLM judge's outside view sees the pattern: cross-review fixed dual-build's own decomposition damage.
+
+#### What this calibrates
+
+The pastebin run (#2) first surfaced the "tightly-coupled-by-design" bail criterion. Test-04 + test-05 reproduce a related but distinct pattern: **even on file-disjoint tasks where the contract is well-specified, an isolated builder reading only their own brief makes different (sometimes worse) implementation choices than a single-agent context that holds the whole problem.** The cross-review reliably catches these — but the workflow's overall cost-vs-value math depends on whether single-agent context naturally avoided the same mistake.
+
+For the v0.2.6 skill update, this means the bail criteria should add: *"on small (~200 LOC) fixture-style tasks where each module's contract is locally specifiable, expect cross-review to fix decomposition-introduced bugs rather than catch bugs single-agent would ship. Bail unless the task touches concurrency/timing/state-machine logic or the codebase is large enough that single-agent context can't hold it."*
+
+---
+
 ### #N1 — bugfix-trio test-suite run (2026-05-06)
 
 **Test fixture**: three intentional bugs in three file-disjoint files (`test-suite/tests/01-bugfix-trio/`):

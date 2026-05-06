@@ -36,6 +36,15 @@ Bail (decline the workflow, recommend single-agent) if ANY of these hold. Bailin
 - **No file-disjoint decomposition possible** — everything touches the same hot file. Worktree isolation can't help.
 - **Tightly-coupled work** where every subtask needs every other subtask's output to test (cross-task dependencies > 1).
 - **Tightly-coupled-by-design** components — even when file-disjoint, if the design decisions span all subtasks (e.g., "the renderer's behavior depends on the API's input-validation choices," "all three layers share an error-shape contract that's invented during the build"), single-agent context produces *better* cross-cutting decisions than coordinated agents working from a pre-written contract. Cross-review can catch decomposition damage but doesn't restore the cross-cutting design insight that was lost in the split. Pastebin's 2026-05-06 test run made this concrete: baseline shipped a generic JSON error handler, language-hint auto-fencing, a slug-shape guard, WAL journal mode, and a strict expires-in-hours allowlist — all cross-cutting decisions a single head naturally produced. Dual-build, working from a contract, missed those.
+- **Small fixture-scale tasks (~200 LOC) where each module's contract is locally specifiable.** Across 5 test fixtures run on 2026-05-06 (see `EXAMPLES.md`), three reproduced the **"self-inflicted decomposition catch"** pattern: dual-build's isolated builders made different (sometimes worse) implementation choices than single-agent context naturally would, cross-review caught the bugs, baseline never had them in the first place. Net cross-review value vs. baseline was zero on those runs. Bail on small file-disjoint refactors unless one of the positive-signal carve-outs below applies.
+
+#### Positive-signal carve-outs (override the bail criteria above)
+
+Even at low LOC or for tasks that look mechanical, cross-review value tends to be high when:
+
+- **Concurrency/timing/state-machine logic** — throttle, debounce, retry, locks, queues, pollers. The 2026-05-06 test-04 retro proposed this carve-out after Codex's review caught a stale-timer bug in a Claude-built throttle that the existing test suite didn't pin. Sync-blocking, race windows, and reentrancy are exactly the kind of thing fresh adversarial eyes catch reliably.
+- **Validation logic where one model is known to have blind spots** — e.g., `typeof === 'number' && val > 0` letting `NaN` slip through (test-03's clean win). If the bug class is one a single agent would ALSO miss, cross-review pays off whether or not the codebase is large.
+- **Real-world large codebases** where a single agent can't hold the whole problem in head — `mission-control` real-app cross-review catch (#1 in EXAMPLES.md) is the canonical example.
 - **Time-sensitive fixes** — the workflow takes minutes, not seconds.
 - **Exploratory or interactive work** — user is steering turn-by-turn.
 - **Working tree is dirty** — uncommitted changes won't be visible to the worktrees (see prerequisites). Either commit/stash first or bail.
@@ -248,6 +257,11 @@ A typical run is: N builder invocations (Opus + Codex) + N review invocations (C
 The cross-review is what justifies the cost. On runs with substantive findings (e.g., race-condition catches, edge-case discoveries), it earns its keep. On runs with no findings — or with all findings being false positives — it's overhead. Bail criteria exist to avoid those runs.
 
 ## Changelog
+
+**v0.2.6** (2026-05-06) — based on test-04 (audit of utility modules) + test-05 (recursive→iterative migration) A/B runs. Both produced **"baseline better"** verdicts for the same reason: cross-review caught real bugs, but the bugs only existed because dual-build's decomposition introduced them; single-agent baseline naturally avoided them. The pattern is now reproducible across 3 of 5 fixtures (pastebin, test-04, test-05).
+- **New bail criterion**: small fixture-scale (~200 LOC) file-disjoint refactors where each module's contract is locally specifiable. Expect "self-inflicted decomposition catch" rather than real lift over baseline.
+- **New positive-signal carve-outs**: concurrency/timing/state-machine logic (throttle, debounce, retry, locks, queues), validation logic with known model blind spots (NaN-style), and real-world large codebases where single-agent context can't hold the whole problem. Cross-review value is high in these regardless of LOC.
+- **EXAMPLES.md updates**: new `#N2 audit-undisclosed-bugs` and `#N3 recursive-to-iterative` entries under "Negative results", plus a top-level "Pattern observation" section documenting the self-inflicted-decomposition catch pattern across 3 of 5 fixtures.
 
 **v0.2.5** (2026-05-06) — based on the test-03 callback→async/await migration A/B run, which produced the test suite's first **"dual-build clearly better"** LLM-judge verdict (cross-review caught a `NaN` validation bug that single-agent baseline shipped + zero NaN tests):
 - **Stage 1.7 — shared-test-file deletion gotcha**: documented the hang/fail pattern when one subtask owns the deletion of a shared test file. N-1 sibling worktrees see hangs or signature-mismatch failures during the full-suite run; workaround is to run only the per-task test file and note the cross-task isolation artifact in the reviewer brief. Surfaced by test-03 where T1 owned the deletion of `test/baseline.test.js` (which imported all four callback APIs).

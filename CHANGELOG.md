@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.2.6 — 2026-05-06
+
+Driven by test-04 (audit of utility modules with undisclosed bugs) and test-05 (recursive→iterative migration) A/B runs. Both produced **"baseline better"** LLM-judge verdicts for the same reason as the earlier pastebin run: cross-review caught real, applied bugs, but the bugs only existed because dual-build's decomposition introduced them; single-agent baseline naturally avoided them at first authorship. **Net cross-review value vs. baseline: zero** on both runs.
+
+### Pattern: "self-inflicted decomposition catch" is now reliable
+
+The pattern is reproduced across 3 of 5 fixtures run on 2026-05-06 (pastebin, test-04, test-05). The remaining two:
+- `01-bugfix-trio` — no cross-review findings at all (small textbook fixes).
+- `03-callback-async-migration` — clean dual-build win (cross-review caught a `NaN` validation bug that baseline ALSO shipped + tested for, but missed).
+
+The dual-build skill's positive value is concentrated in cases where the bug class is something a single agent would *also* miss. For everything else at fixture scale, expect the workflow to fix bugs it created.
+
+### New bail criterion + positive-signal carve-outs (SKILL.md)
+
+- **Bail**: small fixture-scale (~200 LOC) file-disjoint refactors where each module's contract is locally specifiable. Expect self-inflicted decomposition catches rather than real lift.
+- **Carve-outs that override the bail**: concurrency/timing/state-machine code (throttle, debounce, retry, locks); validation logic with known blind spots (NaN-style); real-world large codebases where single-agent context can't hold the whole problem.
+
+### New EXAMPLES.md entries
+
+- Top-level "Pattern observation" section under "Negative results" documenting the self-inflicted decomposition pattern across the 5-fixture sweep.
+- `#N2 audit-undisclosed-bugs` — Codex caught a stale-timer bug in Claude-built throttle (Critical, score 92), applied; baseline's first-pass throttle avoided it via a different code shape.
+- `#N3 recursive-to-iterative` — Codex caught sparse-array hole densification in Claude-built iterative json-clone (Important, score 82), applied; baseline used `Object.keys` and avoided the failure mode entirely.
+
+### New test fixtures
+
+- `04-audit-undisclosed-bugs` — 4 utility modules with bugs, mixed test pass/fail. Note: source comments give away the explicit bugs (still informative for measuring cross-review value beyond the obvious).
+- `05-recursive-to-iterative` — 4 recursive functions migrated to iterative with deep-input contracts (50000 nodes / 10000 depth / 5000-deep parens).
+
 ## v0.2.5 — 2026-05-06
 
 Driven by the test-03 callback→async/await migration A/B run — the test suite's first **"dual-build clearly better"** LLM-judge verdict. Cross-review (Codex on T3) caught a `NaN`-validation bug single-agent baseline shipped, with zero NaN tests in baseline's test suite. Verifiable in 2 seconds via a `node -e` one-liner against both sandboxes.
