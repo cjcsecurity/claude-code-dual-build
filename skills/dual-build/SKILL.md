@@ -87,7 +87,25 @@ Each subtask must specify:
 
 **Show the split to the user and wait for confirmation before dispatching builders.** If they redirect (reassign tasks, adjust scope, add/remove a subtask), accept and re-plan. Do not proceed without explicit go-ahead — the parallel build phase will spawn N agents and is non-trivial to abort cleanly.
 
-**Auto-approve mode (unattended runs):** if the env var `DUAL_BUILD_AUTO_APPROVE=1` is set (check with `Bash(echo "${DUAL_BUILD_AUTO_APPROVE:-0}")`), skip the user-confirmation pause. Write the proposed split to `_dual-build-plan.md` in the working directory for asynchronous review and proceed directly to Stage 1. Use only for unattended/benchmark runs (e.g., the test harness in the repo's `test-suite/`). Interactive use should keep the pause — the pause exists for a reason.
+**Auto-approve mode (unattended runs):** if the env var `DUAL_BUILD_AUTO_APPROVE=1` is set (check with `Bash(echo "${DUAL_BUILD_AUTO_APPROVE:-0}")`), skip the user-confirmation pause. Write the proposed split to `_dual-build-plan.md` in the working directory for asynchronous review and proceed directly to Stage 0.5 (then Stage 1). Use only for unattended/benchmark runs (e.g., the test harness in the repo's `test-suite/`). Interactive use should keep the pause — the pause exists for a reason.
+
+### Stage 0.5 — Cross-cutting alignment doc
+
+After the user confirms the split (or auto-approve fires), write a short `_dual-build-decisions.md` to the working directory listing **cross-cutting choices that all builders should converge on**. This pre-empts the "self-inflicted decomposition catch" pattern observed across 3 of 5 test fixtures (pastebin, test-04, test-05) where isolated builders made different implementation choices for the same kind of decision and the workflow paid for cross-review to find the divergence.
+
+Examples of cross-cutting decisions worth pinning:
+
+- **Validation patterns** — e.g., `use Number.isFinite() for numeric checks, not typeof === 'number'` (which lets `NaN` through)
+- **Error shapes** — which error class, which message format (especially when modules document contracts like `Error('opts.timeoutMs must be positive number')`)
+- **Iteration / data-structure conventions** — e.g., `for sparse arrays, use Object.keys() to skip holes naturally`
+- **Resource cleanup** — `always use try/finally to release X`, or `prefer AbortController over manual cleanup flags`
+- **Naming and import conventions** — `helpers go in lib/utils.js`, `tests in test/<module>.test.js` not `tests/`
+
+Generate this doc by re-reading the per-task briefs from Stage 0 with an eye toward "if I were writing all four tasks myself, what choices would I make consistently?" The point is to surface the implicit decisions a single-agent builder would make naturally, so isolated builders can match them.
+
+**Length**: ~5–25 lines, bullet-form. Short. If you genuinely can't identify any cross-cutting concern (truly independent modules, no shared patterns), write `(no cross-cutting concerns identified — modules are independent in style)` so the file's presence documents that no shared decisions were necessary. An empty / missing decisions doc is the failure case from earlier versions of the workflow.
+
+This stage is mandatory. Skipping it reproduces the pattern from #2/#N2/#N3 in EXAMPLES.md.
 
 ### Stage 1 — Parallel build
 
@@ -99,13 +117,15 @@ Agent(
   subagent_type: "claude-builder",
   isolation: "worktree",
   description: "Build T<id>: <one-line goal>",
-  prompt: "<full structured brief — Task ID, Goal, Brief, File scope, Acceptance, Project notes, plus 'Parent HEAD: <PARENT_HEAD_SHA>. Verify with `git log --oneline -3` and report the output in your final report.'>"
+  prompt: "<full structured brief — Task ID, Goal, Brief, File scope, Acceptance, Project notes, plus 'Parent HEAD: <PARENT_HEAD_SHA>. Verify with `git log --oneline -3` and report the output in your final report.' AND 'Cross-cutting decisions: read _dual-build-decisions.md in the working directory before starting and honor those choices.'>"
 )
 ```
 
 For each subtask assigned to Codex: same shape, `subagent_type: "codex-builder"`.
 
 **Embed the parent's HEAD SHA in every brief.** This lets builders self-check their base and gives the orchestrator data to detect mismatches in Stage 1.5.
+
+**Embed the cross-cutting decisions reference in every brief.** Builders must read `_dual-build-decisions.md` from the working directory before implementing. This is the load-bearing piece that prevents the self-inflicted decomposition pattern.
 
 Wait for all to return. Each response includes the worktree path, branch name, files changed, and a structured report.
 
@@ -177,7 +197,23 @@ Surfaced by the 2026-05-06 callback-async migration test fixture (test-03). See 
 
 ### Stage 2 — Parallel cross-review
 
+Before dispatching, **capture each task's diff** so each reviewer can see siblings' implementations:
+
+```
+for each completed worktree W with branch B:
+  sibling_diff[B] = `git -C <W> diff <PARENT_HEAD>..HEAD`
+```
+
+Cap each sibling diff at ~500 lines (truncate with `head -500` plus a `... [truncated]` note); 4 siblings × 500 lines is a workable context budget.
+
 Dispatch all reviewers in a SINGLE message with N parallel `Agent` calls. **Critical: each task is reviewed by the OPPOSITE model.** Claude-built tasks → `codex-reviewer`; Codex-built tasks → `claude-reviewer`.
+
+Each reviewer brief must include a **Sibling diffs** section listing the OTHER tasks' diffs (everything except the diff being reviewed). This lets the reviewer:
+
+- **Spot cross-cutting asymmetries** — e.g., "Sibling T1 uses `Number.isFinite()` for numeric validation; this task (T3) uses `typeof === 'number'`, which lets NaN through." The 2026-05-06 test-03 + test-04 + test-05 runs all surfaced bugs of this exact shape; injecting sibling diffs lets the reviewer flag the divergence directly rather than merely catching the bug after-the-fact in isolation.
+- **Cross-check shared utilities** — if T1 and T3 both implement an "is positive number" check inline, the reviewer should suggest extracting a shared helper rather than letting the inconsistency ship.
+
+The sibling diffs are **read-only context for the reviewer**, not the artifact under review. The reviewer must NOT comment on the sibling code itself or assert that something in a sibling is broken (that's the sibling reviewer's job, and the cross-task-wiring rule from v0.2.4 still forbids "X is unused / Y is missing" claims about sibling worktrees). They CAN say "T<sibling> handled this differently — consider aligning."
 
 Reviewers do NOT use `isolation: "worktree"` — they read the existing builder worktree directly via `git -C <path>` and the Read tool with absolute paths.
 
@@ -240,6 +276,15 @@ After merges complete, run the project's test suite (`npm test`, `pytest`, etc.)
 
 Then ask whether to clean up remaining worktrees (run the unlock+remove sequence per worktree).
 
+#### Cleanup of Stage 0.5 / 0 plan files
+
+Once merges are complete (or work is abandoned), remove the orchestrator-generated plan files from the working directory:
+
+- `_dual-build-plan.md` (auto-approve only — written in Stage 0)
+- `_dual-build-decisions.md` (always — written in Stage 0.5)
+
+These are scratch artifacts; they should not be committed.
+
 ## Guardrails
 
 - **Bail criteria are strict.** Re-read "When NOT to use" if Stage 0 produces an imbalanced or docs-heavy split — single-agent is the right tool more often than the workflow's framing suggests.
@@ -257,6 +302,12 @@ A typical run is: N builder invocations (Opus + Codex) + N review invocations (C
 The cross-review is what justifies the cost. On runs with substantive findings (e.g., race-condition catches, edge-case discoveries), it earns its keep. On runs with no findings — or with all findings being false positives — it's overhead. Bail criteria exist to avoid those runs.
 
 ## Changelog
+
+**v0.2.7** (2026-05-06) — two structural changes targeting the "self-inflicted decomposition catch" pattern observed across 3 of 5 fixtures (pastebin, test-04, test-05). Both changes try to prevent the divergence at source rather than catching it late.
+- **New Stage 0.5 — Cross-cutting alignment doc.** After Stage 0's task split is confirmed, the orchestrator writes `_dual-build-decisions.md` listing cross-cutting choices (validation patterns, error shapes, iteration conventions) all builders must converge on. Builders read it before implementing. Both `claude-builder` and `codex-builder` agents updated to require this read step. Cleanup added to Stage 4.
+- **Sibling-diff injection in Stage 2.** Reviewers now receive the OTHER tasks' diffs (capped ~500 lines each) as read-only context. New responsibility: flag cross-cutting asymmetries (e.g., "T1 uses `Number.isFinite`, T3 uses `typeof === 'number'` — NaN slips through here") as **Important** findings. Both `claude-reviewer` and `codex-reviewer` agents updated. The cross-task-wiring rule (forbidding "X is missing"-style claims) is preserved with a sharpened distinction: pattern asymmetry between two diffs you can read = ✅ flag; wiring claim about post-merge behavior = ❌ still forbidden.
+
+These two changes are untested as of this commit — they're skill-doc + agent-prompt updates, no executable code. The next test-suite sweep will measure whether they reduce the self-inflicted-catch rate. Hypothesis: test-04 and test-05 (small fixture-scale, locally-specifiable contracts) should now produce zero asymmetry-class findings rather than the ones they shipped pre-fix; whether that translates to real cost-benefit improvement depends on whether the alignment doc + sibling diffs add enough overhead to outweigh the saved review-then-fix cycles.
 
 **v0.2.6** (2026-05-06) — based on test-04 (audit of utility modules) + test-05 (recursive→iterative migration) A/B runs. Both produced **"baseline better"** verdicts for the same reason: cross-review caught real bugs, but the bugs only existed because dual-build's decomposition introduced them; single-agent baseline naturally avoided them. The pattern is now reproducible across 3 of 5 fixtures (pastebin, test-04, test-05).
 - **New bail criterion**: small fixture-scale (~200 LOC) file-disjoint refactors where each module's contract is locally specifiable. Expect "self-inflicted decomposition catch" rather than real lift over baseline.

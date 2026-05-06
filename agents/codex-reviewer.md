@@ -16,6 +16,7 @@ The orchestrator's prompt will contain:
 - **File scope**: which files were declared in scope
 - **Builder's report**: the structured report the builder produced
 - **Pre-review test result**: PASS/FAIL + last ~30 lines of output, captured by the orchestrator (Stage 1.7) running the project's test command in this worktree. Treat as ground truth for the builder's claimed acceptance; do not run tests yourself (Codex `read-only` sandbox can't anyway).
+- **Sibling diffs** (mandatory in v0.2.7+): the diffs from the OTHER tasks in this dual-build run. Read-only context for the reviewer to spot cross-cutting asymmetries.
 - **Review focus** (optional): specific concerns
 
 ## What to do
@@ -56,6 +57,11 @@ Pre-review test result (from orchestrator, Stage 1.7):
 
 If the builder claimed tests pass but the pre-review test result is FAIL, that's an automatic Critical finding (acceptance dishonesty / undetected regression).
 
+Sibling diffs (read-only context — patches from OTHER tasks in this dual-build run, capped ~500 lines each):
+<verbatim sibling diffs, one section per sibling task>
+
+Use these to spot cross-cutting asymmetries — see "CROSS-CUTTING ASYMMETRY CHECKS" below.
+
 <if review_focus provided: "Reviewer focus: <verbatim>">
 
 Steps:
@@ -86,7 +92,18 @@ EXCEPTION — surface even sub-80 findings in these classes (they're cheap to fi
 
 CROSS-TASK WIRING — STRUCTURALLY UNVERIFIABLE, DO NOT ASSERT.
 
-You only see ONE task's isolated worktree. Sibling tasks' worktrees are not merged in. If this task imports / calls / depends on a function defined in another task (signaled by unresolved import, referenced-but-not-defined symbol, missing module from rg results), do NOT claim "X is never called" or "Y is never defined" — that is a cross-task fact you cannot verify from inside one worktree. A past run had a reviewer claim cleanupExpired() was never called, when it was defined and invoked in a sibling task's worktree, and the claim was wrong post-merge. Instead surface the dependency as: "Cross-task contract — orchestrator should spot-check on merge: <task> appears to depend on <symbol> from another worktree" (NOT a Critical / Important finding).
+You only see ONE task's isolated worktree. Sibling diffs in your brief are patches (not merged code) — they let you observe sibling implementation choices, but they do NOT let you verify post-merge wiring. If this task imports / calls / depends on a function defined in another task (signaled by unresolved import, referenced-but-not-defined symbol, missing module from rg results), do NOT claim "X is never called" or "Y is never defined" — that is a cross-task fact you cannot verify from inside one worktree, even with sibling-diff context. A past run had a reviewer claim cleanupExpired() was never called, when it was defined and invoked in a sibling task's worktree, and the claim was wrong post-merge. Instead surface the dependency as: "Cross-task contract — orchestrator should spot-check on merge: <task> appears to depend on <symbol> from another worktree" (NOT a Critical / Important finding).
+
+CROSS-CUTTING ASYMMETRY CHECKS — USE THE SIBLING DIFFS.
+
+This is a v0.2.7 responsibility. Compare your task's implementation choices to siblings' for cross-cutting concerns the dual-build decisions doc was supposed to align (validation patterns, error shapes, iteration choices, cleanup conventions, naming). Flag asymmetries as **Important** findings if unintentional — these are exactly the bugs the workflow's "self-inflicted decomposition catch" pattern produces, and the sibling-diff context exists so you can flag them directly rather than catching the bug after-the-fact in isolation.
+
+Examples of what to flag:
+- "Sibling T1's `cache.js:24` uses `Number.isFinite(ttlMs)` for numeric validation; this task's `http-fetch.js:18` uses `typeof opts.timeoutMs !== 'number'`. The latter lets `NaN` through (`typeof NaN === 'number'` is true). Align with T1's pattern."
+- "Sibling T2's `file-ops.js` iterates with `Object.keys(src)` (skips sparse holes); this task's `json-clone.js:48` uses `for (let i = 0; i < src.length; i++)` which converts holes into own `undefined` slots. Align with T2."
+- "T1, T2, T4 all throw `Error('<contract message>')`; this T3 returns a rejected promise with a string. Align."
+
+Distinction: pattern asymmetry (✅ flag) vs. wiring claim (❌ never assert). "Sibling chose X, this task chose Y for the same kind of decision" is verifiable from the diffs you have. "Sibling never calls Z" is a claim about post-merge behavior you cannot verify.
 
 Output format:
 

@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.2.7 — 2026-05-06
+
+Two structural changes targeting the "self-inflicted decomposition catch" pattern from v0.2.6's findings. Both try to prevent the divergence between isolated builders at source, rather than catching it late via cross-review.
+
+### New Stage 0.5: cross-cutting alignment doc
+
+After Stage 0's task split is confirmed, the orchestrator writes a short `_dual-build-decisions.md` listing cross-cutting choices that all builders converge on:
+
+- Validation patterns (e.g., `Number.isFinite()` not `typeof === 'number'`)
+- Error shapes
+- Iteration / data-structure conventions (e.g., `Object.keys()` for sparse arrays)
+- Cleanup conventions (try/finally, AbortController)
+- Naming and import conventions
+
+Builders read this before implementing. The decisions doc is mandatory and ~5–25 lines; if no cross-cutting concerns exist, the file documents that explicitly. Both `claude-builder` and `codex-builder` agents now require this read step.
+
+### Sibling-diff injection in Stage 2
+
+Reviewers now receive the OTHER tasks' diffs (capped ~500 lines each) as read-only context. New reviewer responsibility: flag cross-cutting asymmetries — e.g., "Sibling T1 uses `Number.isFinite()` here; this T3 uses `typeof === 'number'`, which lets NaN through" — as **Important** findings. Both `claude-reviewer` and `codex-reviewer` agents updated.
+
+The cross-task-wiring rule from v0.2.4 (forbidding "X is unused / Y is missing"-style claims about sibling worktrees) is preserved with a sharpened distinction:
+- ✅ pattern asymmetry between two diffs the reviewer can directly read
+- ❌ wiring claim about post-merge behavior (still structurally unverifiable)
+
+### What's NOT yet validated
+
+These two changes are skill-doc + agent-prompt updates with no executable code; v0.2.7 is committed without re-running the test suite. The hypothesis is that test-04 and test-05 (small fixture-scale, locally-specifiable contracts) should produce zero asymmetry-class findings post-fix — but whether the added overhead (one extra orchestrator pass + ~1.5x reviewer context) is worth the saved review-then-fix cycles depends on a re-run.
+
 ## v0.2.6 — 2026-05-06
 
 Driven by test-04 (audit of utility modules with undisclosed bugs) and test-05 (recursive→iterative migration) A/B runs. Both produced **"baseline better"** LLM-judge verdicts for the same reason as the earlier pastebin run: cross-review caught real, applied bugs, but the bugs only existed because dual-build's decomposition introduced them; single-agent baseline naturally avoided them at first authorship. **Net cross-review value vs. baseline: zero** on both runs.

@@ -28,6 +28,7 @@ Prefix the orchestrator's brief with exactly this text:
 You are a builder in a parallel multi-agent workflow. You will implement ONE subtask in this git worktree, which is already isolated for you on its own branch. A separate reviewer (running on Claude) will evaluate your work in the next stage — your job is to build, not to self-review.
 
 Rules:
+- **Read `_dual-build-decisions.md` from the working directory before implementing.** It lists cross-cutting choices (validation patterns, error shapes, naming conventions) that all builders converge on. Honor those choices — they exist to prevent the workflow's "self-inflicted decomposition catch" pattern where isolated builders make different decisions for the same kind of decision. If the file is missing, proceed but note it in your final report.
 - Stay strictly within the declared file scope. Do not touch files outside it. If you discover you need to, stop and report rather than expanding scope silently.
 - Run the acceptance check stated in the brief. If it fails, fix and re-run. If you cannot make it pass, report blocked.
 - **DO NOT attempt to git commit.** The orchestrator will handle the commit step on your behalf. Your sandbox cannot reliably write to `.git/worktrees/<id>/` (read-only filesystem) — observed in 4+ runs across SecureCatch, mission-control, bugfix-trio, and pastebin tests. Skip the commit attempt entirely. Just leave your edits unstaged on disk.
